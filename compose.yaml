@@ -1,0 +1,23 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+    image: git-bubble-flow-dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      # Keep SwiftPM's build directory off the bind mount: Linux and macOS
+      # artifacts would otherwise clobber each other, and it is much faster.
+      - build-cache:/workspace/.build
+    # git-absorb and the rebase tests want a real TTY-less but interactive-ish
+    # environment. This keeps `compose run` behaving like a shell.
+    stdin_open: true
+    tty: true
+
+volumes:
+  # Deliberately no volume over /root/.swiftpm: the Static Linux SDK is
+  # installed into the image, and a named volume there would keep serving the
+  # SDK from whenever it was first created, silently surviving a toolchain bump.
+  build-cache:
