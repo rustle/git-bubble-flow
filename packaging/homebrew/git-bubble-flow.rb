@@ -9,16 +9,11 @@
 # the manifest is rewritten to path-based dependencies before building. The
 # build itself performs no resolution and no fetching.
 #
-# This formula cannot install from a checkout: url/sha256 below are
-# placeholders until a release is tagged. Build from source with `make install`.
 class GitBubbleFlow < Formula
   desc "Semi-linear git-flow tooling: empty, nestable bubble merges"
   homepage "https://github.com/rustle/git-bubble-flow"
-  # url/sha256 are placeholders until a release is tagged and published. The
-  # formula cannot install until they are real; build from a checkout with
-  # `make install` in the meantime.
-  url "https://github.com/rustle/git-bubble-flow/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "0" * 64
+  url "https://github.com/rustle/git-bubble-flow/archive/refs/tags/0.1.0.tar.gz"
+  sha256 "8e5271b71323586620c8696711e68e1656c97708dfbf1e1b92710edc86ed35fc"
   license "Apache-2.0"
   head "https://github.com/rustle/git-bubble-flow.git", branch: "main"
 

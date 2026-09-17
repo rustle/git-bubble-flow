@@ -33,7 +33,7 @@ macOS, via Homebrew. The formula builds from source and installs a single binary
 brew install rustle/tap/git-bubble-flow
 ```
 
-The formula in `packaging/homebrew/` is the release template. Its `url` and `sha256` are placeholders until a release is tagged, so it cannot install from a checkout. To install from source today, build and link it directly:
+The formula lives in `packaging/homebrew/` and points at the tagged release tarball. To install from a checkout instead, build and link it directly:
 
 ```sh
 make install                  # into /usr/local/bin
