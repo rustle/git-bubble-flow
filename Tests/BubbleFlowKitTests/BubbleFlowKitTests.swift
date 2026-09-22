@@ -295,6 +295,122 @@ struct ResolveTests {
     }
 }
 
+@Suite("Worktree listing")
+struct WorktreeTests {
+    /// The shape `git worktree list --porcelain` emits, one record per entry.
+    private let porcelain = """
+        worktree /repo/main
+        HEAD 1111111111111111111111111111111111111111
+        branch refs/heads/develop
+
+        worktree /repo/with space/feature
+        HEAD 2222222222222222222222222222222222222222
+        branch refs/heads/PROJ-100-feature
+
+        worktree /repo/detached
+        HEAD 3333333333333333333333333333333333333333
+        detached
+
+        worktree /repo/bare
+        bare
+
+        worktree /repo/locked
+        HEAD 4444444444444444444444444444444444444444
+        branch refs/heads/PROJ-102-locked
+        locked on removable media
+
+        worktree /repo/gone
+        HEAD 5555555555555555555555555555555555555555
+        branch refs/heads/PROJ-103-gone
+        prunable gitdir file points to non-existent location
+
+        """
+
+    @Test("every entry and attribute is read back")
+    func parsesAllEntries() {
+        let worktrees = Worktree.parse(porcelain, separator: "\n")
+        #expect(worktrees.count == 6)
+        #expect(worktrees[0].branch == "refs/heads/develop")
+        // A path may contain spaces, so only the first space separates the key.
+        #expect(worktrees[1].path == "/repo/with space/feature")
+        #expect(worktrees[2].isDetached)
+        #expect(worktrees[2].branch == nil)
+        #expect(worktrees[3].isBare)
+        #expect(worktrees[4].lockedReason == "on removable media")
+        #expect(worktrees[5].isPrunable)
+        #expect(worktrees[0].isLocked == false)
+        #expect(worktrees[0].isPrunable == false)
+    }
+
+    @Test("the NUL-separated form parses identically")
+    func parsesZeroTerminated() {
+        // `-z` is what list() asks for first, because the line-based form cannot
+        // represent a path containing a newline.
+        let zeroTerminated = porcelain.replacing("\n", with: "\0")
+        #expect(
+            Worktree.parse(zeroTerminated, separator: "\0") == Worktree.parse(porcelain, separator: "\n"))
+    }
+
+    @Test("a path containing a newline survives the NUL form")
+    func newlineInPath() {
+        let worktrees = Worktree.parse(
+            "worktree /repo/two\nlines\0HEAD 1111111\0branch refs/heads/x\0\0", separator: "\0")
+        #expect(worktrees.count == 1)
+        #expect(worktrees[0].path == "/repo/two\nlines")
+    }
+
+    @Test("an attribute from a newer git is ignored rather than fatal")
+    func unknownAttribute() {
+        let worktrees = Worktree.parse(
+            "worktree /repo/main\nbranch refs/heads/develop\nsomething-new value\n\n", separator: "\n")
+        #expect(worktrees.count == 1)
+        #expect(worktrees[0].branch == "refs/heads/develop")
+    }
+
+    @Test("a trailing record with no blank line after it is still returned")
+    func unterminatedRecord() {
+        let worktrees = Worktree.parse(
+            "worktree /repo/main\nbranch refs/heads/develop", separator: "\n")
+        #expect(worktrees.count == 1)
+    }
+
+    @Test("empty output is no worktrees, not one empty one")
+    func emptyOutput() {
+        #expect(Worktree.parse("", separator: "\n").isEmpty)
+    }
+}
+
+@Suite("Worktree redirection")
+struct WorktreeGitTests {
+    @Test("every command names the worktree's own git dir and work tree")
+    func redirectsBothStreams() async {
+        let stub = StubGit()
+        let redirected = WorktreeGit(path: "/repo/feature", git: stub)
+
+        _ = await redirected.capture(["rev-parse", "HEAD"], config: [:])
+        _ = await redirected.passthrough(["merge", "--no-ff"], config: [:])
+
+        // -C alone would be silently wrong: git exports GIT_DIR to `!` aliases,
+        // which is how `git land` runs, and the inherited value beats -C. The
+        // explicit overrides are what make the redirect hold.
+        let expectedPrefix = [
+            "-C", "/repo/feature", "--git-dir=/repo/feature/.git", "--work-tree=/repo/feature",
+        ]
+        #expect(stub.captured.first == expectedPrefix + ["rev-parse", "HEAD"])
+        #expect(stub.passedThrough.first == expectedPrefix + ["merge", "--no-ff"])
+    }
+
+    @Test("config overrides still reach git alongside the redirect")
+    func keepsConfigOverrides() async {
+        let stub = StubGit()
+        let redirected = WorktreeGit(path: "/repo/feature", git: stub)
+        _ = await redirected.capture(["status"], config: ["core.hooksPath": "/dev/null"])
+        // The runner assembles `-c` overrides itself, so the redirect must not
+        // swallow them.
+        #expect(stub.captured.first?.last == "status")
+    }
+}
+
 @Suite("Git output limit")
 struct GitOutputLimitTests {
     private struct SpawnFailure: Error {}

@@ -54,6 +54,16 @@ public enum Sys {
         return access(path, X_OK) == 0
     }
 
+    /// True when anything exists at `path`, directory included.
+    ///
+    /// `isExecutableFile` answers a narrower question: it requires a regular
+    /// file, so it reports false for the state *directories* git writes for an
+    /// operation in progress.
+    public static func pathExists(_ path: String) -> Bool {
+        var info = stat()
+        return stat(path, &info) == 0
+    }
+
     /// Resolves every symlink in `path`. Returns the input unchanged when the
     /// path cannot be resolved, so callers always get something usable.
     public static func realPath(_ path: String) -> String {
