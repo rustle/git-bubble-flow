@@ -16,7 +16,7 @@
 /// git subcommands select a mode. Keeps `git verify-bubble` working through
 /// git's PATH-based subcommand discovery with no wrapper scripts to install.
 public enum CLI {
-    public static let version = "0.1.0"
+    public static let version = "0.2.0"
 
     public enum Command: String, CaseIterable, Sendable {
         case verify
