@@ -261,6 +261,41 @@ setup_worktree_pair() {
     [ "$(git rev-parse --abbrev-ref HEAD)" = "ABC-101-sub" ]
 }
 
+@test "land-bubble refuses a target worktree holding an untracked file the merge needs" {
+    # diff-index cannot see this one: the tree is clean by its reckoning, but
+    # git will not clobber an untracked file and aborts the merge. Without the
+    # preflight that abort lands after the backup tag.
+    setup_worktree_pair
+    echo "not mine" > "$WT/feature/sub.txt"
+
+    run git land --target ABC-100-feature -m "Sub feature"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"untracked files"* ]]
+    [[ "$output" == *"sub.txt"* ]]
+
+    # Same invariant as the dirty case: nothing written, tag included.
+    [ "$(git rev-parse ABC-100-feature)" = "$FEATURE_BEFORE" ]
+    [ -z "$(git tag -l 'backup/*')" ]
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "ABC-101-sub" ]
+
+    # And the file they had there is still theirs.
+    [ "$(cat "$WT/feature/sub.txt")" = "not mine" ]
+}
+
+@test "land-bubble lands past an untracked file the merge does not touch" {
+    # Only a collision may refuse. Unrelated scratch files are git's business
+    # to leave alone, and it does.
+    setup_worktree_pair
+    echo "scratch" > "$WT/feature/unrelated.txt"
+
+    run git land --target ABC-100-feature -m "Sub feature"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$WT/feature/unrelated.txt")" = "scratch" ]
+
+    run git verify-bubble --base staging ABC-100-feature
+    [ "$status" -eq 0 ]
+}
+
 @test "land-bubble still checks the target out when no other worktree holds it" {
     # The single-worktree path is unchanged: the land leaves you on the target.
     git checkout -b ABC-200-plain staging

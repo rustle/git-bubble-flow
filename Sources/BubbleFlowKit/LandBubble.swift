@@ -159,7 +159,9 @@ public enum LandBubble {
         let landing: any GitRunning
         let landedInWorktree: Worktree?
         if currentBranch != target, let holder = await Worktree.holding(branch: target, git: git) {
-            guard let usable = await usableForLanding(holder, target: target, git: git, console: console)
+            guard
+                let usable = await usableForLanding(
+                    holder, target: target, source: currentBranch, git: git, console: console)
             else { return 1 }
             landing = usable
             landedInWorktree = holder
@@ -257,11 +259,15 @@ public enum LandBubble {
     /// target is an ancestor of HEAD, so the result is a fast-forward in every
     /// respect but the commit -- which makes the worktree's own state the only
     /// thing that can go wrong. Landing into a dirty tree would mix uncommitted
-    /// work into the checkout, and landing into one mid-rebase would confuse
-    /// both operations, so both are refused rather than half-performed.
+    /// work into the checkout, landing into one mid-rebase would confuse both
+    /// operations, and landing over an untracked file git will not clobber
+    /// aborts the merge. All three are refused rather than half-performed, and
+    /// all three are checked before the backup tag, so a refusal leaves the
+    /// repository exactly as it found it.
     static func usableForLanding(
         _ worktree: Worktree,
         target: String,
+        source: String,
         git: any GitRunning,
         console: any Console
     ) async -> (any GitRunning)? {
@@ -317,6 +323,39 @@ public enum LandBubble {
             error("The worktree at \(worktree.path) has \(description) in progress.")
             console.err("Finish or abort it there, then land again.")
             return nil
+        }
+
+        // The one dirtiness git refuses that diff-index cannot see. The merge
+        // writes every path differing between the target and the branch being
+        // landed, and git will not clobber an untracked file at one of them --
+        // it aborts. That abort would come after the backup tag, leaving a tag
+        // behind for a land that never happened, which is the whole reason
+        // these checks run first.
+        //
+        // Ignored files are left out, because git overwrites those itself.
+        let changed = await git.capture(
+            ["diff", "--name-only", "-z", "\(target)..\(source)"], config: [:])
+        guard changed.succeeded else {
+            error("Could not list what '\(source)' would bring into '\(target)'.")
+            return nil
+        }
+        let incoming = changed.standardOutput.split(separator: "\0").map(String.init)
+        if !incoming.isEmpty {
+            // Listed whole rather than queried per path: a pathspec for every
+            // incoming file would be an unbounded argument list.
+            let others = await landing.capture(
+                ["ls-files", "--others", "--exclude-standard", "-z"], config: [:])
+            let untracked = Set(others.standardOutput.split(separator: "\0").map(String.init))
+            let colliding = incoming.filter(untracked.contains).sorted()
+            if !colliding.isEmpty {
+                error("The worktree at \(worktree.path) has untracked files that landing would overwrite.")
+                for path in colliding.prefix(10) { console.err("  \(path)") }
+                if colliding.count > 10 {
+                    console.err("  ... and \(colliding.count - 10) more")
+                }
+                console.err("Move or remove them there, then land again.")
+                return nil
+            }
         }
 
         return landing
