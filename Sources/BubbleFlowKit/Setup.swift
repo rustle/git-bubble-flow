@@ -89,17 +89,34 @@ public enum Setup {
         ]
         // Never clobber a value the repository already set: re-running setup
         // used to reset a customised ticket pattern back to the default.
+        //
+        // An explicit --base is the exception. It is an instruction rather than
+        // a default, so it overrides configured values instead of being
+        // silently dropped.
+        //
+        // targets goes with it. --base names the branch bubbles land on as
+        // well as the one they are verified against, and land reads targets
+        // while verify and rebase read base. Moving one without the other
+        // leaves land merging into the old branch.
+        let overridden: Set<String> =
+            requestedBase == nil ? [] : ["bubbleflow.base", "bubbleflow.targets"]
+        // What the repository ends up with, which is not `base` when a value
+        // was kept. The closing examples have to quote this, not the request.
+        var effectiveBase = base
         var applied: [(String, String)] = []
         for (key, value) in settings {
             // --local on purpose: a plain --get also reads global and system
             // config, so a user's global rerere.enabled=false would suppress the
             // repository-level write and silently disable rerere here.
             let existing = await git.capture(["config", "--local", "--get", key], config: [:])
-            if existing.succeeded, !existing.value.trimmedWhitespace().isEmpty {
-                applied.append((key, "\(existing.value)  (kept, already set)"))
+            let kept = existing.succeeded ? String(existing.value.trimmedWhitespace()) : ""
+            if !overridden.contains(key), !kept.isEmpty {
+                if key == "bubbleflow.base" { effectiveBase = kept }
+                applied.append((key, "\(kept)  (kept, already set)"))
                 continue
             }
             guard await git.passthrough(["config", key, value], config: [:]) == 0 else { return 1 }
+            if key == "bubbleflow.base" { effectiveBase = value }
             applied.append((key, value))
         }
 
@@ -134,7 +151,7 @@ public enum Setup {
         console.out("")
         console.out("Examples:")
         console.out("git land -m \"Feature implementation\"")
-        console.out("git rebase-bubble --onto origin/\(base)")
+        console.out("git rebase-bubble --onto origin/\(effectiveBase)")
         console.out("git verify-bubble --strict")
         return 0
     }

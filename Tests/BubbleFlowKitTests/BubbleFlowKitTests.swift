@@ -181,15 +181,23 @@ struct SetupTests {
         return directory
     }
 
-    /// StubGit answers status 1 by default, so every `config --get` probe reads
-    /// as unset and setup takes its first-run path.
-    private func runSetup(searchPath: String = "") async -> (Int32, StubGit, RecordingConsole) {
+    /// StubGit answers status 1 by default, so any key left out of `configured`
+    /// reads as unset and setup takes its first-run path for it.
+    private func runSetup(
+        _ arguments: [String] = [],
+        head: String = "main",
+        configured: [String: String] = [:],
+        searchPath: String = ""
+    ) async -> (Int32, StubGit, RecordingConsole) {
         let git = StubGit()
         let console = RecordingConsole()
         git.stub(["rev-parse", "--git-dir"])
-        git.stub(["symbolic-ref", "--short", "HEAD"], stdout: "main\n")
+        git.stub(["symbolic-ref", "--short", "HEAD"], stdout: "\(head)\n")
+        for (key, value) in configured {
+            git.stub(["config", "--local", "--get", key], stdout: "\(value)\n")
+        }
         let status = await Setup.run(
-            arguments: [], git: git, console: console, searchPath: searchPath)
+            arguments: arguments, git: git, console: console, searchPath: searchPath)
         return (status, git, console)
     }
 
@@ -214,6 +222,45 @@ struct SetupTests {
         #expect(console.stderr.contains { $0.contains("git-land-bubble") })
         // The warning must not cost the user their configuration.
         #expect(git.passedThrough.contains(["config", "alias.land", "land-bubble"]))
+    }
+
+    @Test("an explicit --base overrides a configured base")
+    func explicitBaseWins() async {
+        // Keeping it would silently drop what the user typed, with nothing but
+        // a "(kept, already set)" line to say so.
+        let (status, git, _) = await runSetup(
+            ["--base", "develop"],
+            head: "some-feature",
+            configured: ["bubbleflow.base": "main", "bubbleflow.targets": "main"])
+
+        #expect(status == 0)
+        #expect(git.passedThrough.contains(["config", "bubbleflow.base", "develop"]))
+        // targets has to move with it. land reads targets while verify and
+        // rebase read base, so moving one alone leaves land merging into main.
+        #expect(git.passedThrough.contains(["config", "bubbleflow.targets", "develop"]))
+    }
+
+    @Test("without --base a configured base is kept, and the examples quote it")
+    func keptBaseIsQuoted() async {
+        let (status, git, console) = await runSetup(
+            head: "some-feature",
+            configured: ["bubbleflow.base": "main", "bubbleflow.targets": "main"])
+
+        #expect(status == 0)
+        #expect(!git.passedThrough.contains { $0.count > 1 && $0[1] == "bubbleflow.base" })
+        // The closing examples used to interpolate the branch HEAD is on, so
+        // they contradicted the configuration printed a few lines above.
+        #expect(console.stdout.contains("git rebase-bubble --onto origin/main"))
+        #expect(!console.stdout.contains { $0.contains("some-feature") })
+    }
+
+    @Test("a custom ticket pattern still survives a re-run")
+    func customPatternKept() async {
+        let (status, git, _) = await runSetup(
+            configured: ["bubbleflow.ticketPattern": "CUSTOM-[0-9]+"])
+
+        #expect(status == 0)
+        #expect(!git.passedThrough.contains { $0.count > 1 && $0[1] == "bubbleflow.ticketPattern" })
     }
 
     @Test("a PATH holding every shim warns about nothing")
