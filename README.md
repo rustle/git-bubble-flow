@@ -86,7 +86,7 @@ git push --force-with-lease
 git land -m "Super neato thingy doodle."
 ```
 
-`git land` checks that the working tree is clean, that the target exists and is already an ancestor of your branch (so an un-rebased branch is refused, not merged), extracts the ticket from the branch name, tags the target's pre-merge tip as `backup/land-<branch>-<timestamp>`, merges with `--no-ff` and a `Merge <TICKET>: <summary>` subject, then verifies that the merge it just made is in fact a bubble — all the way down, if the branch contained bubbles of its own. If verification fails it resets the target back to its pre-merge commit and leaves your branch untouched. A branch that adds no commits is refused outright rather than reported as landed. It never pushes — it prints the `git push` command and leaves the decision to you.
+`git land` checks that the working tree is clean, that the target exists and is already an ancestor of your branch (so an un-rebased branch is refused, not merged), takes a subject label from the branch name, tags the target's pre-merge tip as `backup/land-<branch>-<timestamp>`, merges with `--no-ff` and a `Merge <LABEL>: <summary>` subject, then verifies that the merge it just made is in fact a bubble — all the way down, if the branch contained bubbles of its own. The label is the ticket when the branch name carries one and the branch name itself when it does not, so a repository with no ticket convention is not forced into one. `--strict` requires a ticket, which is what makes the resulting subject satisfy `verify --strict`. If verification fails it resets the target back to its pre-merge commit and leaves your branch untouched. A branch that adds no commits is refused outright rather than reported as landed. It never pushes — it prints the `git push` command and leaves the decision to you.
 
 It will not rebase for you, deliberately. A rebase can need real conflict resolution, and resolving conflicts on your behalf would produce a tree nobody reviewed and CI never saw — which is the exact failure the empty bubble exists to rule out. Refusing an un-rebased branch keeps the decision where the judgement is.
 
@@ -132,7 +132,7 @@ One multi-call binary, `git-bubble-flow`, with five subcommands. Each is also re
 | Command | Symlink / alias | What it does |
 |---|---|---|
 | `verify [<ref>] [--base <ref>] [--strict]` | `git-verify-bubble` / `git verify-bubble` | Walks the first-parent line from the merge base of `--base` and `<ref>`, recursing into each bubble's contents, failing on non-empty bubbles and octopus merges at any depth. `--strict` also fails on subjects that are not `Merge <TICKET>: …` and on non-merge commits sitting directly on the verified range, outside any bubble. |
-| `land [--target <branch>] [-m <summary>]` | `git-land-bubble` / `git land` | Clean-tree and ancestry checks, tags the target's pre-merge tip, `--no-ff` merge, verifies exactly the new bubble, resets the target on failure. Never pushes, never rebases for you. |
+| `land [--target <branch>] [-m <summary>] [--strict]` | `git-land-bubble` / `git land` | Clean-tree and ancestry checks, tags the target's pre-merge tip, `--no-ff` merge, verifies exactly the new bubble, resets the target on failure. Never pushes, never rebases for you. The subject is `Merge <TICKET>: …` when the branch name carries a ticket and `Merge <branch>: …` when it does not. `--strict` requires the ticket. |
 | `rebase [--bubble <branch>] [--onto <base>]` | `git-rebase-bubble` / `git rebase-bubble` | `rebase --rebase-merges --update-refs` with rerere on the current branch (or `--bubble`), tagging first and verifying after. On verification failure it does **not** reset — it prints the reset command. |
 | `absorb [--base <ref>] [<git-absorb args>…]` | `git-bubble-absorb` / `git bubble-absorb` | Runs `git-absorb` down to the merge-base of `HEAD` and `bubbleflow.base`. Inside a nested bubble that is the enclosing bubble, so it never rewrites below it. |
 | `setup [--base <branch>]` | `bubble-flow-setup` | Writes the `bubbleflow.*` keys and the git aliases into the current repository. The base defaults to the branch `HEAD` is on. |
@@ -147,9 +147,9 @@ All keys are read from the repository's git config.
 |---|---|---|
 | `bubbleflow.targets` | `develop` | `land`'s default target, a space-separated list of which the first word wins |
 | `bubbleflow.base` | `develop` | `verify`'s default base, `rebase`'s default `--onto`, and `absorb`'s base |
-| `bubbleflow.ticketPattern` | `[A-Z]+-[0-9]+` | ticket extraction in `land`, and the `--strict` subject check |
+| `bubbleflow.ticketPattern` | `[A-Z]+-[0-9]+` | ticket extraction in `land`, and the `--strict` subject check in `verify` |
 
-There is no built-in branch name. A repository that never ran `setup` has no base or target, and `verify`, `rebase`, `absorb` and `land` refuse to run until one is configured or passed on the command line. The ticket pattern does fall back, to `[A-Z]+-[0-9]+`, and that fallback is shared by `land` and `verify --strict` on purpose, so the two can never disagree about what counts as a ticket.
+There is no built-in branch name. A repository that never ran `setup` has no base or target, and `verify`, `rebase`, `absorb` and `land` refuse to run until one is configured or passed on the command line. The ticket pattern does fall back, to `[A-Z]+-[0-9]+`, and that fallback is shared by `land` and `verify --strict` on purpose, so the two can never disagree about what counts as a ticket. Whether a ticket is *required* is opt-in on both sides: `land --strict` refuses a branch without one, and `verify --strict` refuses a subject without one. Use both or neither.
 
 ## Development
 

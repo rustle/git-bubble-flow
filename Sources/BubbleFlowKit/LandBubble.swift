@@ -16,6 +16,9 @@ public enum LandBubble {
     public struct Options {
         public var target: String?
         public var message: String?
+        /// Require a ticket in the branch name, as `verify --strict` requires
+        /// one in the merge subject.
+        public var strict = false
         public init() {}
     }
 
@@ -37,6 +40,9 @@ public enum LandBubble {
                     return nil
                 }
                 options.message = value
+            case "--strict":
+                options.strict = true
+                scanner.advance()
             case let other:
                 console.err("Unknown argument: \(other)")
                 return nil
@@ -79,8 +85,14 @@ public enum LandBubble {
             return 1
         }
 
-        // Ticket extraction uses the same pattern (and the same fallback) as
-        // `verify-bubble --strict`, so the two never disagree.
+        // The subject label: the ticket in the branch name when there is one,
+        // and the branch name itself when there is not.
+        //
+        // Requiring a ticket is what --strict turns on, matching
+        // `verify --strict`, which is what requires the resulting subject to
+        // read `Merge <TICKET>: ...`. The two agree when both are strict, and a
+        // repository that wants neither is not forced into a ticket convention
+        // it does not have.
         let pattern = await config.ticketPattern()
         if let complaint = BubbleFlowConfig.anchorComplaint(about: pattern) {
             error(complaint)
@@ -91,11 +103,17 @@ public enum LandBubble {
             error("Invalid bubbleflow.ticketPattern: \(pattern)")
             return 1
         }
-        guard let match = currentBranch.firstMatch(of: ticketRegex) else {
+        let label: String
+        if let match = currentBranch.firstMatch(of: ticketRegex) {
+            label = String(currentBranch[match.range])
+        } else if options.strict {
             error("Could not extract ticket from branch name: \(currentBranch)")
+            console.err("The pattern is bubbleflow.ticketPattern: \(pattern)")
+            console.err("Drop --strict to land with the branch name as the subject instead.")
             return 1
+        } else {
+            label = currentBranch
         }
-        let ticket = String(currentBranch[match.range])
 
         if let complaint = BubbleFlowConfig.refComplaint(about: target, describedAs: "target") {
             error(complaint)
@@ -126,7 +144,7 @@ public enum LandBubble {
         var message = options.message ?? ""
         if message.isEmpty {
             message = await git.capture(["log", "--format=%s", "-1", "HEAD"], config: [:]).value
-            if message.isEmpty { message = "Merge \(ticket)" }
+            if message.isEmpty { message = "Merge \(label)" }
         }
 
         console.out("Checking out target branch: \(target)")
@@ -148,7 +166,7 @@ public enum LandBubble {
         console.out("Creating backup tag: \(backupTag) (pre-merge \(target))")
         guard await git.passthrough(["tag", backupTag], config: [:]) == 0 else { return 1 }
 
-        let mergeMessage = "Merge \(ticket): \(message)"
+        let mergeMessage = "Merge \(label): \(message)"
         console.out("Merging \(currentBranch) into \(target) with message: \(mergeMessage)")
         guard
             await git.passthrough(

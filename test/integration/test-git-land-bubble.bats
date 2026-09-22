@@ -122,6 +122,49 @@ teardown() {
     last_commit_msg=$(git log --format=%B -1)
     [[ "$last_commit_msg" == *"Merge ABC-999:"* ]]
 }
+@test "land-bubble falls back to the branch name when there is no ticket" {
+    # A ticket convention is opt-in. Without --strict a branch that does not
+    # carry one still lands, with its own name as the subject label.
+    git checkout -b no-ticket-here staging
+    echo "Untickered" > untickered.txt
+    git add untickered.txt
+    git commit -m "Add untickered work"
+
+    run git land --target staging -m "Landing without a ticket"
+    [ "$status" -eq 0 ]
+
+    last_commit_msg=$(git log --format=%B -1)
+    [[ "$last_commit_msg" == *"Merge no-ticket-here: Landing without a ticket"* ]]
+}
+
+@test "land-bubble --strict refuses a branch with no ticket" {
+    git checkout -b still-no-ticket staging
+    echo "Strict" > strict.txt
+    git add strict.txt
+    git commit -m "Add strict work"
+
+    run git land --strict --target staging -m "Should fail"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Could not extract ticket"* ]]
+    [[ "$output" == *"Drop --strict"* ]]
+
+    # Nothing may have moved: the refusal comes before the merge.
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "still-no-ticket" ]
+}
+
+@test "land-bubble --strict accepts a branch that carries a ticket" {
+    git checkout -b ABC-555-strict-ok staging
+    echo "Strict ok" > strictok.txt
+    git add strictok.txt
+    git commit -m "Add strict-ok work"
+
+    run git land --strict --target staging -m "Strictly landed"
+    [ "$status" -eq 0 ]
+
+    last_commit_msg=$(git log --format=%B -1)
+    [[ "$last_commit_msg" == *"Merge ABC-555: Strictly landed"* ]]
+}
+
 @test "land-bubble refuses a feature branch that adds nothing" {
     # A branch created at the target tip has nothing to merge: git reports
     # "Already up to date", exits 0 and creates no commit. Landing must fail
