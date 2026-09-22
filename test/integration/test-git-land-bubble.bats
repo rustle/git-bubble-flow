@@ -41,7 +41,29 @@ setup() {
 
 teardown() {
     cd /
-    rm -rf "$TEST_DIR"
+    # Worktrees are created outside the repo, so the second path is not covered
+    # by removing the first.
+    rm -rf "$TEST_DIR" "$TEST_DIR-worktrees"
+}
+
+# The layout the nested-branch workflow produces: a feature branch and a
+# sub-feature branch off it, each checked out in its own worktree, with the
+# shell left standing in the sub-feature one. Records the feature branch's tip
+# in FEATURE_BEFORE so a test can assert on whether it moved. Not called through
+# command substitution anywhere: that would run it in a subshell, and neither
+# the directory change nor WT would reach the test.
+setup_worktree_pair() {
+    WT="$TEST_DIR-worktrees"
+    mkdir -p "$WT"
+    git checkout -q staging
+    git branch ABC-100-feature staging
+    git worktree add -q "$WT/feature" ABC-100-feature
+    git worktree add -q -b ABC-101-sub "$WT/sub" ABC-100-feature
+    cd "$WT/sub"
+    echo "sub work" > sub.txt
+    git add sub.txt
+    git commit -qm "ABC-101 sub work"
+    FEATURE_BEFORE="$(git rev-parse ABC-100-feature)"
 }
 
 @test "land-bubble successfully lands a feature branch" {
@@ -196,4 +218,93 @@ teardown() {
 
     # HEAD must still be attached to the feature branch, not detached.
     [ "$(git rev-parse --abbrev-ref HEAD)" = "ABC-321-tag-target" ]
+}
+
+@test "land-bubble lands into the worktree that holds the target branch" {
+    # git refuses to check out a branch a second worktree already has, which
+    # used to stop the land dead. The merge happens in that worktree instead, so
+    # its ref, index and files stay consistent with one another.
+    setup_worktree_pair
+
+    run git land --target ABC-100-feature -m "Sub feature"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"is checked out at"* ]]
+
+    # The target advanced, and its worktree holds the landed content with
+    # nothing left uncommitted.
+    [ "$(git rev-parse ABC-100-feature)" != "$FEATURE_BEFORE" ]
+    [ -f "$WT/feature/sub.txt" ]
+    [ -z "$(git -C "$WT/feature" status --porcelain)" ]
+
+    # The sub-feature worktree is where we started and still is.
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "ABC-101-sub" ]
+
+    # And what landed is a bubble like any other.
+    run git verify-bubble --base staging ABC-100-feature
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Merge ABC-101"* ]]
+}
+
+@test "land-bubble refuses a target worktree with uncommitted changes" {
+    # Landing would check the merge result out over whatever is sitting there.
+    setup_worktree_pair
+    echo "scratch" > "$WT/feature/scratch.txt"
+    git -C "$WT/feature" add scratch.txt
+
+    run git land --target ABC-100-feature -m "Sub feature"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"dirty"* ]]
+
+    # The refusal comes before anything is written, backup tag included.
+    [ "$(git rev-parse ABC-100-feature)" = "$FEATURE_BEFORE" ]
+    [ -z "$(git tag -l 'backup/*')" ]
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "ABC-101-sub" ]
+}
+
+@test "land-bubble refuses a target worktree holding an untracked file the merge needs" {
+    # diff-index cannot see this one: the tree is clean by its reckoning, but
+    # git will not clobber an untracked file and aborts the merge. Without the
+    # preflight that abort lands after the backup tag.
+    setup_worktree_pair
+    echo "not mine" > "$WT/feature/sub.txt"
+
+    run git land --target ABC-100-feature -m "Sub feature"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"untracked files"* ]]
+    [[ "$output" == *"sub.txt"* ]]
+
+    # Same invariant as the dirty case: nothing written, tag included.
+    [ "$(git rev-parse ABC-100-feature)" = "$FEATURE_BEFORE" ]
+    [ -z "$(git tag -l 'backup/*')" ]
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "ABC-101-sub" ]
+
+    # And the file they had there is still theirs.
+    [ "$(cat "$WT/feature/sub.txt")" = "not mine" ]
+}
+
+@test "land-bubble lands past an untracked file the merge does not touch" {
+    # Only a collision may refuse. Unrelated scratch files are git's business
+    # to leave alone, and it does.
+    setup_worktree_pair
+    echo "scratch" > "$WT/feature/unrelated.txt"
+
+    run git land --target ABC-100-feature -m "Sub feature"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$WT/feature/unrelated.txt")" = "scratch" ]
+
+    run git verify-bubble --base staging ABC-100-feature
+    [ "$status" -eq 0 ]
+}
+
+@test "land-bubble still checks the target out when no other worktree holds it" {
+    # The single-worktree path is unchanged: the land leaves you on the target.
+    git checkout -b ABC-200-plain staging
+    echo "plain" > plain.txt
+    git add plain.txt
+    git commit -qm "ABC-200 plain work"
+
+    run git land --target staging -m "Plain"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Checking out target branch"* ]]
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "staging" ]
 }

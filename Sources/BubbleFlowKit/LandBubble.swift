@@ -147,13 +147,38 @@ public enum LandBubble {
             if message.isEmpty { message = "Merge \(label)" }
         }
 
-        console.out("Checking out target branch: \(target)")
-        // The trailing "--" ends option parsing for the pathspec that follows.
-        // It is the branch having been validated as refs/heads/<target> above
-        // that keeps a name beginning with "-" from being read as an option.
-        guard await git.passthrough(["checkout", target, "--"], config: [:]) == 0 else { return 1 }
+        // Where the merge happens. Normally the current worktree, once the
+        // target is checked out there. When another worktree already holds the
+        // target git refuses that checkout outright, so the merge is performed
+        // in that worktree instead, which keeps its ref, index and files
+        // consistent with each other.
+        //
+        // The current branch differing from the target is what makes "some
+        // worktree holds the target" mean "some *other* worktree": git allows a
+        // branch in at most one worktree at a time.
+        let landing: any GitRunning
+        let landedInWorktree: Worktree?
+        if currentBranch != target, let holder = await Worktree.holding(branch: target, git: git) {
+            guard
+                let usable = await usableForLanding(
+                    holder, target: target, source: currentBranch, git: git, console: console)
+            else { return 1 }
+            landing = usable
+            landedInWorktree = holder
+            console.out("Target branch \(target) is checked out at \(holder.path)")
+            console.out("Landing there. \(currentBranch) stays checked out here.")
+        } else {
+            landing = git
+            landedInWorktree = nil
+            console.out("Checking out target branch: \(target)")
+            // The trailing "--" ends option parsing for the pathspec that
+            // follows. It is the branch having been validated as
+            // refs/heads/<target> above that keeps a name beginning with "-"
+            // from being read as an option.
+            guard await git.passthrough(["checkout", target, "--"], config: [:]) == 0 else { return 1 }
+        }
 
-        let preMergeTip = await git.capture(["rev-parse", "HEAD"], config: [:]).value
+        let preMergeTip = await landing.capture(["rev-parse", "HEAD"], config: [:]).value
         guard !preMergeTip.isEmpty else {
             error("Could not read the pre-merge tip of '\(target)'")
             return 1
@@ -164,12 +189,12 @@ public enum LandBubble {
         let backupTag = await uniqueTag(
             "backup/land-\(currentBranch)-\(backupTimestamp(now))", git: git)
         console.out("Creating backup tag: \(backupTag) (pre-merge \(target))")
-        guard await git.passthrough(["tag", backupTag], config: [:]) == 0 else { return 1 }
+        guard await landing.passthrough(["tag", backupTag], config: [:]) == 0 else { return 1 }
 
         let mergeMessage = "Merge \(label): \(message)"
         console.out("Merging \(currentBranch) into \(target) with message: \(mergeMessage)")
         guard
-            await git.passthrough(
+            await landing.passthrough(
                 ["merge", "--no-ff", "-m", mergeMessage, "--", currentBranch], config: [:]
             ) == 0
         else {
@@ -180,12 +205,12 @@ public enum LandBubble {
         // merge ("Already up to date"). Without this check land announces
         // success, tells the user to push, and leaves a backup tag behind for a
         // branch it never advanced.
-        let postMergeTip = await git.capture(["rev-parse", "HEAD"], config: [:]).value
+        let postMergeTip = await landing.capture(["rev-parse", "HEAD"], config: [:]).value
         if postMergeTip == preMergeTip {
             error("Nothing to land: '\(currentBranch)' adds no commits to '\(target)'.")
             // Captured, not passed through: git's "Deleted tag" line would
             // otherwise follow the error and read like a consequence of it.
-            _ = await git.capture(["tag", "-d", backupTag], config: [:])
+            _ = await landing.capture(["tag", "-d", backupTag], config: [:])
             return 1
         }
 
@@ -195,14 +220,20 @@ public enum LandBubble {
         var verify = VerifyBubble.Options()
         verify.ref = "HEAD"
         verify.base = "HEAD~1"
-        if await VerifyBubble.run(options: verify, git: git, console: console) != 0 {
+        if await VerifyBubble.run(options: verify, git: landing, console: console) != 0 {
             error("New bubble failed verification. Resetting \(target) to its pre-merge state.")
             // Reset to the tip recorded before the merge rather than ORIG_HEAD,
             // which other git commands also write and which is only correct here
             // by coincidence.
-            if await git.passthrough(["reset", "--hard", preMergeTip, "--"], config: [:]) == 0 {
-                console.err(
-                    "You are now on '\(target)' at its pre-merge commit. '\(currentBranch)' is unchanged.")
+            if await landing.passthrough(["reset", "--hard", preMergeTip, "--"], config: [:]) == 0 {
+                if let landedInWorktree {
+                    console.err(
+                        "'\(target)' at \(landedInWorktree.path) is back at its pre-merge commit. "
+                            + "'\(currentBranch)' is unchanged.")
+                } else {
+                    console.err(
+                        "You are now on '\(target)' at its pre-merge commit. '\(currentBranch)' is unchanged.")
+                }
             } else {
                 console.err("Could not reset '\(target)'. Recover with: git reset --hard \(backupTag)")
             }
@@ -210,11 +241,123 @@ public enum LandBubble {
         }
 
         console.out("Bubble successfully landed!")
+        if let landedInWorktree {
+            console.out("\(target) advanced in the worktree at \(landedInWorktree.path)")
+        }
         console.out("To push the updated target branch:")
         console.out("git push origin \(target)")
         console.out("")
         console.out("If you want to clean up, you can remove the backup tag:")
         console.out("git tag -d \(backupTag)")
         return 0
+    }
+
+    /// Checks that a worktree holding the target can safely be merged into, and
+    /// returns a runner aimed at it.
+    ///
+    /// The merge itself cannot conflict -- land has already established that the
+    /// target is an ancestor of HEAD, so the result is a fast-forward in every
+    /// respect but the commit -- which makes the worktree's own state the only
+    /// thing that can go wrong. Landing into a dirty tree would mix uncommitted
+    /// work into the checkout, landing into one mid-rebase would confuse both
+    /// operations, and landing over an untracked file git will not clobber
+    /// aborts the merge. All three are refused rather than half-performed, and
+    /// all three are checked before the backup tag, so a refusal leaves the
+    /// repository exactly as it found it.
+    static func usableForLanding(
+        _ worktree: Worktree,
+        target: String,
+        source: String,
+        git: any GitRunning,
+        console: any Console
+    ) async -> (any GitRunning)? {
+        func error(_ message: String) { console.err("ERROR: \(message)") }
+
+        if worktree.isPrunable {
+            error("The worktree at \(worktree.path) holds '\(target)' but is gone from disk.")
+            console.err("Run 'git worktree prune' and try again.")
+            return nil
+        }
+
+        let landing = WorktreeGit(path: worktree.path, git: git)
+
+        // Doubles as a reachability probe: a worktree on unmounted media fails
+        // here, with git's own message, rather than midway through the merge.
+        let refresh = await landing.capture(["update-index", "-q", "--refresh"], config: [:])
+        if !refresh.succeeded, !refresh.standardError.trimmedWhitespace().isEmpty {
+            console.err(String(refresh.standardError.trimmedWhitespace()))
+            error("Could not read the worktree at \(worktree.path).")
+            return nil
+        }
+        if await landing.succeeds("diff-index", "--quiet", "HEAD", "--") == false {
+            error("The worktree at \(worktree.path) has '\(target)' checked out and is dirty.")
+            console.err("Commit or stash what is there, then land again.")
+            return nil
+        }
+
+        // An operation in progress owns that worktree's HEAD and index, and
+        // merging into it would wreck both. Most of them cannot reach this point
+        // anyway: a conflicted merge or cherry-pick reads as dirty above, and a
+        // stopped rebase detaches HEAD, so the worktree is not reported as
+        // holding the branch at all and git refuses the checkout instead. What
+        // does reach here is a merge whose conflicts were resolved back to
+        // HEAD's own content, which leaves MERGE_HEAD live over a tree that
+        // looks clean. Detected from the state files in the worktree's gitdir,
+        // the way git's own prompt does it, so the refusal lands before the
+        // backup tag rather than as a puzzling failure from git mid-merge.
+        let gitDir = await landing.capture(["rev-parse", "--absolute-git-dir"], config: [:])
+        guard gitDir.succeeded, !gitDir.value.isEmpty else {
+            error("Could not locate the git directory of the worktree at \(worktree.path).")
+            return nil
+        }
+        let operations: [(String, String)] = [
+            ("rebase-merge", "a rebase"),
+            ("rebase-apply", "a rebase"),
+            ("MERGE_HEAD", "a merge"),
+            ("CHERRY_PICK_HEAD", "a cherry-pick"),
+            ("REVERT_HEAD", "a revert"),
+            ("BISECT_LOG", "a bisect"),
+            ("sequencer", "a sequencer operation"),
+        ]
+        for (stateFile, description) in operations where Sys.pathExists("\(gitDir.value)/\(stateFile)") {
+            error("The worktree at \(worktree.path) has \(description) in progress.")
+            console.err("Finish or abort it there, then land again.")
+            return nil
+        }
+
+        // The one dirtiness git refuses that diff-index cannot see. The merge
+        // writes every path differing between the target and the branch being
+        // landed, and git will not clobber an untracked file at one of them --
+        // it aborts. That abort would come after the backup tag, leaving a tag
+        // behind for a land that never happened, which is the whole reason
+        // these checks run first.
+        //
+        // Ignored files are left out, because git overwrites those itself.
+        let changed = await git.capture(
+            ["diff", "--name-only", "-z", "\(target)..\(source)"], config: [:])
+        guard changed.succeeded else {
+            error("Could not list what '\(source)' would bring into '\(target)'.")
+            return nil
+        }
+        let incoming = changed.standardOutput.split(separator: "\0").map(String.init)
+        if !incoming.isEmpty {
+            // Listed whole rather than queried per path: a pathspec for every
+            // incoming file would be an unbounded argument list.
+            let others = await landing.capture(
+                ["ls-files", "--others", "--exclude-standard", "-z"], config: [:])
+            let untracked = Set(others.standardOutput.split(separator: "\0").map(String.init))
+            let colliding = incoming.filter(untracked.contains).sorted()
+            if !colliding.isEmpty {
+                error("The worktree at \(worktree.path) has untracked files that landing would overwrite.")
+                for path in colliding.prefix(10) { console.err("  \(path)") }
+                if colliding.count > 10 {
+                    console.err("  ... and \(colliding.count - 10) more")
+                }
+                console.err("Move or remove them there, then land again.")
+                return nil
+            }
+        }
+
+        return landing
     }
 }

@@ -161,10 +161,12 @@ public enum CLI {
               land [--target <branch>] [-m <summary>] [--strict]
                   Land the current branch into <branch> with --no-ff, after tagging
                   the target's pre-merge tip, then verify exactly the new bubble.
-                  Never pushes, and never rebases for you. The merge subject is
-                  'Merge <TICKET>: ...' when the branch name carries a ticket and
-                  'Merge <branch>: ...' when it does not. --strict requires the
-                  ticket, matching what verify --strict expects of the subject.
+                  Never pushes, and never rebases for you. When another worktree
+                  already holds <branch>, the merge happens there and you stay on
+                  your own branch. The merge subject is 'Merge <TICKET>: ...' when
+                  the branch name carries a ticket and 'Merge <branch>: ...' when
+                  it does not. --strict requires the ticket, matching what
+                  verify --strict expects of the subject.
 
               rebase [--bubble <branch>] [--onto <base>]
                   Move a bubble branch (default: the current one) with
