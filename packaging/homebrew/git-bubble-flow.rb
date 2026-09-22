@@ -12,8 +12,8 @@
 class GitBubbleFlow < Formula
   desc "Semi-linear git-flow tooling: empty, nestable bubble merges"
   homepage "https://github.com/rustle/git-bubble-flow"
-  url "https://github.com/rustle/git-bubble-flow/archive/refs/tags/0.1.0.tar.gz"
-  sha256 "8e5271b71323586620c8696711e68e1656c97708dfbf1e1b92710edc86ed35fc"
+  url "https://github.com/rustle/git-bubble-flow/archive/refs/tags/0.2.0.tar.gz"
+  sha256 "9b74dff3ee5f887cf2a6bb952d1b6bf054a626aa81b8b442cb994410d7a96817"
   license "Apache-2.0"
   head "https://github.com/rustle/git-bubble-flow.git", branch: "main"
 
