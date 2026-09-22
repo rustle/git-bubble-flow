@@ -166,17 +166,64 @@ struct BaseResolutionTests {
     }
 }
 
-@Suite("Alias quoting")
+@Suite("Setup")
 struct SetupTests {
-    @Test("a plain path is left alone")
-    func plain() {
-        #expect(Setup.shellQuote("/usr/local/bin/git-bubble-flow") == "/usr/local/bin/git-bubble-flow")
+    /// A directory holding executables with the given names, for the PATH the
+    /// shim check reads.
+    private func makeShims(_ names: [String]) throws -> String {
+        let directory = "/tmp/bf-setup-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        for name in names {
+            let path = "\(directory)/\(name)"
+            try "#!/bin/sh\n".write(toFile: path, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        }
+        return directory
     }
 
-    @Test("a path with spaces survives the shell git runs aliases through")
-    func spaces() {
-        #expect(
-            Setup.shellQuote("/Users/a b/bin/git-bubble-flow") == "'/Users/a b/bin/git-bubble-flow'")
+    /// StubGit answers status 1 by default, so every `config --get` probe reads
+    /// as unset and setup takes its first-run path.
+    private func runSetup(searchPath: String = "") async -> (Int32, StubGit, RecordingConsole) {
+        let git = StubGit()
+        let console = RecordingConsole()
+        git.stub(["rev-parse", "--git-dir"])
+        git.stub(["symbolic-ref", "--short", "HEAD"], stdout: "main\n")
+        let status = await Setup.run(
+            arguments: [], git: git, console: console, searchPath: searchPath)
+        return (status, git, console)
+    }
+
+    @Test("the only alias written is land, and it names a subcommand")
+    func writesOneBareAlias() async throws {
+        let directory = try makeShims(CLI.Command.allCases.map(\.shimName))
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (status, git, _) = await runSetup(searchPath: directory)
+
+        #expect(status == 0)
+        let aliasWrites = git.passedThrough.filter { $0.count >= 2 && $0[1].hasPrefix("alias.") }
+        // A path here is what `brew upgrade` would invalidate, and the three
+        // other commands are reached through git's own PATH discovery.
+        #expect(aliasWrites == [["config", "alias.land", "land-bubble"]])
+    }
+
+    @Test("shims missing from PATH are a warning, not a refusal")
+    func warnsWhenShimsAreMissing() async {
+        let (status, git, console) = await runSetup(searchPath: "/nonexistent")
+
+        #expect(status == 0)
+        #expect(console.stderr.contains { $0.contains("git-land-bubble") })
+        // The warning must not cost the user their configuration.
+        #expect(git.passedThrough.contains(["config", "alias.land", "land-bubble"]))
+    }
+
+    @Test("a PATH holding every shim warns about nothing")
+    func silentWhenShimsResolve() async throws {
+        let directory = try makeShims(CLI.Command.allCases.map(\.shimName))
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (status, _, console) = await runSetup(searchPath: directory)
+
+        #expect(status == 0)
+        #expect(console.stderr.isEmpty)
     }
 }
 

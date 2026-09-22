@@ -130,12 +130,7 @@ public enum CLI {
         case .absorb:
             return await BubbleAbsorb.run(arguments: rest, git: git, console: console)
         case .setup:
-            return await Setup.run(
-                arguments: rest,
-                git: git,
-                console: console,
-                executablePath: executablePath(argv0: argv0)
-            )
+            return await Setup.run(arguments: rest, git: git, console: console)
         }
     }
 
@@ -178,9 +173,10 @@ public enum CLI {
                   configured base.
 
               setup [--base <branch>]
-                  Write the bubbleflow.* config keys and git aliases into the
-                  current repository. The base defaults to the branch HEAD is
-                  on; no branch name is built in.
+                  Write the bubbleflow.* config keys and the 'git land' alias
+                  into the current repository. The base defaults to the branch
+                  HEAD is on; no branch name is built in. The other three
+                  commands need no alias: git finds their symlinks on PATH.
 
             Each command is also reachable through a symlink named for its git
             subcommand (git-verify-bubble, git-land-bubble, git-rebase-bubble,

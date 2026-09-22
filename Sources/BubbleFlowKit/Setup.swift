@@ -17,7 +17,7 @@ public enum Setup {
         arguments: [String],
         git: any GitRunning,
         console: any Console,
-        executablePath: String
+        searchPath: String = Sys.environment("PATH") ?? ""
     ) async -> Int32 {
         var requestedBase: String?
         var scanner = ArgumentScanner(arguments)
@@ -59,12 +59,19 @@ public enum Setup {
             return 1
         }
 
-        // Checked before anything is written: a refusal half-way through would
-        // leave the repository configured but alias-less.
-        if CLI.Command.forShim(CLI.basename(executablePath)) != nil {
-            console.err("ERROR: Refusing to write aliases pointing at '\(executablePath)'.")
-            console.err("Run bubble-flow-setup through an installed git-bubble-flow binary.")
-            return 1
+        // A warning rather than a refusal. Nothing written below depends on
+        // PATH being right at this moment, and PATH here is not necessarily
+        // PATH at the time the commands are used.
+        //
+        // Git.resolve ignores relative PATH entries on purpose, so an install
+        // reachable only through one is reported as missing. That is why the
+        // wording says "absolute".
+        let missing = [CLI.Command.land, .verify, .rebase, .absorb]
+            .map(\.shimName)
+            .filter { Git.resolve(program: $0, path: searchPath) == nil }
+        if !missing.isEmpty {
+            console.err("WARNING: not on an absolute PATH entry: \(missing.joined(separator: ", "))")
+            console.err("The commands they back will not run until their directory is on PATH.")
         }
 
         console.out("Setting up bubble-flow in this repository...")
@@ -96,20 +103,18 @@ public enum Setup {
             applied.append((key, value))
         }
 
-        console.out("Creating Git aliases...")
+        console.out("Creating the Git alias...")
 
-        // The leading '!' makes git run the value as a shell command. Without
-        // it git treats the value as a subcommand name and every alias fails.
-        // The absolute path means the aliases do not depend on PATH.
-        let quoted = shellQuote(executablePath)
-        let aliases: [(String, String)] = [
-            ("alias.land", "!\(quoted) land"),
-            ("alias.verify-bubble", "!\(quoted) verify"),
-            ("alias.rebase-bubble", "!\(quoted) rebase"),
-            ("alias.bubble-absorb", "!\(quoted) absorb"),
-        ]
-        for (key, value) in aliases {
-            guard await git.passthrough(["config", key, value], config: [:]) == 0 else { return 1 }
+        // A bare subcommand, not a '!' shell body naming a path. Git expands
+        // `git land` to this value and then finds `git-land-bubble` on PATH
+        // itself. Writing a path instead would name the versioned directory a
+        // `brew upgrade` deletes, breaking every configured repository.
+        //
+        // `land` is the only name that needs an alias at all. The other three
+        // shims are already called `git-<subcommand>`, which is exactly how
+        // git discovers an external subcommand.
+        guard await git.passthrough(["config", "alias.land", "land-bubble"], config: [:]) == 0 else {
+            return 1
         }
 
         console.out("Bubble-flow setup complete!")
@@ -117,11 +122,11 @@ public enum Setup {
         console.out("Configuration applied:")
         for (key, value) in applied { console.out("- \(key) = \(value)") }
         console.out("")
-        console.out("Git aliases created:")
-        console.out("- git land → git-bubble-flow land")
-        console.out("- git verify-bubble → git-bubble-flow verify")
-        console.out("- git rebase-bubble → git-bubble-flow rebase")
-        console.out("- git bubble-absorb → git-bubble-flow absorb")
+        console.out("Git alias created:")
+        console.out("- git land → git-land-bubble")
+        console.out("")
+        console.out("Found on PATH, needing no alias:")
+        console.out("- git verify-bubble, git rebase-bubble, git bubble-absorb")
         console.out("")
         console.out("To customize settings, use:")
         console.out("git config bubbleflow.base <branch-name>")
@@ -132,23 +137,5 @@ public enum Setup {
         console.out("git rebase-bubble --onto origin/\(base)")
         console.out("git verify-bubble --strict")
         return 0
-    }
-
-    /// Git runs an alias body through a shell, so the path must survive it.
-    ///
-    /// The test is an allowlist rather than a list of characters to escape: a
-    /// deny-list silently passes through every metacharacter nobody thought of
-    /// ($, `, ;, newline, glob characters), and the result is a broken or
-    /// dangerous alias written into the user's config.
-    static func shellQuote(_ path: String) -> String {
-        let isSafe: (Character) -> Bool = { character in
-            character.isASCII
-                && (character.isLetter || character.isNumber
-                    || character == "/" || character == "." || character == "_" || character == "-")
-        }
-        guard path.allSatisfy(isSafe) else {
-            return "'" + path.replacing("'", with: "'\\''") + "'"
-        }
-        return path
     }
 }
