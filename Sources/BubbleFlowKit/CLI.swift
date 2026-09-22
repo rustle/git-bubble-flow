@@ -47,26 +47,6 @@ public enum CLI {
         }
     }
 
-    /// Absolute path of the *canonical* binary, for the aliases `setup` writes.
-    ///
-    /// Symlinks must be resolved: when invoked through a shim, argv[0] (and, on
-    /// Darwin, `Bundle.main.executablePath`) is the shim's own path. Writing that
-    /// into an alias would make `git land` re-enter the binary as
-    /// `bubble-flow-setup`, which then rejects `land` as an unknown argument.
-    public static func executablePath(argv0: String) -> String {
-        let candidate: String
-        if let path = Sys.executablePath(), !path.isEmpty {
-            candidate = path
-        } else if argv0.contains("/") {
-            candidate = argv0
-        } else {
-            candidate = Git.resolve(program: argv0, path: Sys.environment("PATH") ?? "") ?? argv0
-        }
-        // realpath() follows the whole symlink chain, including cycles, which is
-        // what canonicalizing a shim invocation requires.
-        return Sys.realPath(candidate)
-    }
-
     static func basename(_ path: String) -> String {
         var name = String(path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last ?? "")
         if name.hasSuffix(".exe") { name = String(name.dropLast(4)) }

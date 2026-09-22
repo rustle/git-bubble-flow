@@ -229,53 +229,27 @@ struct SetupTests {
 
 @Suite("C string decoding")
 struct CStringTests {
-    @Test("a sized buffer decodes every byte it holds")
-    func decodesExactBytes() {
-        let buffer = Array("abc".utf8).map { CChar(bitPattern: $0) }
-        #expect(String(decoding: buffer[...]) == "abc")
-    }
-
-    @Test("an empty buffer decodes to an empty string")
-    func empty() {
-        #expect(String(decoding: [CChar]()[...]) == "")
-    }
-
-    @Test("invalid UTF-8 is repaired rather than trapping")
-    func invalidUTF8() {
-        let buffer: [CChar] = [CChar(bitPattern: 0xFF), 0x61]
-        #expect(String(decoding: buffer[...]) == "\u{FFFD}a")
-    }
-
-    @Test("a symlink target longer than the first buffer is read whole")
-    func readLinkGrowsPastTruncation() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("readlink-\(getpid())", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        // readlink only signals truncation by filling the buffer exactly, so
-        // hit that boundary on the first and second doublings as well as a
-        // target past them. macOS caps a target at its 1024-byte PATH_MAX.
-        for length in [255, 256, 512, 1000] {
-            let target = String(repeating: "x", count: length)
-            let link = dir.appendingPathComponent("link-\(length)").path
-            try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
-            #expect(Sys.readLink(link) == target)
-        }
-        #expect(Sys.readLink(dir.appendingPathComponent("missing").path) == nil)
-    }
-
-    @Test("the executable path is sized from the system's answer")
-    func executablePath() {
-        let path = Sys.executablePath()
-        #expect(path?.isEmpty == false)
-        #expect(path?.hasPrefix("/") == true)
-        #expect(path?.utf8.contains(0) == false)
-        #expect(path?.utf8.last != 0)
-    }
-
     @Test("a libc pointer decodes through strlen")
     func nulTerminatedPointer() {
-        #expect(Sys.environment("PATH") != nil)
+        // getenv is the only remaining source of such a pointer. Multi-byte
+        // content exercises the decode rather than just the lookup.
+        let name = "BF_DECODE_PROBE_\(UUID().uuidString.prefix(8))"
+        setenv(name, "héllo wörld/ünicode", 1)
+        defer { unsetenv(name) }
+        #expect(Sys.environment(name) == "héllo wörld/ünicode")
+    }
+
+    @Test("an absent variable is nil rather than empty")
+    func missingVariable() {
+        #expect(Sys.environment("BF_DECODE_PROBE_DEFINITELY_UNSET") == nil)
+    }
+
+    @Test("a variable set to the empty string decodes to an empty string")
+    func emptyVariable() {
+        let name = "BF_DECODE_EMPTY_\(UUID().uuidString.prefix(8))"
+        setenv(name, "", 1)
+        defer { unsetenv(name) }
+        #expect(Sys.environment(name) == "")
     }
 }
 
