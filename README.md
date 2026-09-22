@@ -59,7 +59,9 @@ Then, in each repository you want to use it in:
 bubble-flow-setup --base develop
 ```
 
-That writes the `bubbleflow.*` keys and the git aliases into the repository's own config — `git land`, `git verify-bubble`, `git rebase-bubble`, `git bubble-absorb`. It also sets `pull.ff = only` and enables `rerere` for that repository, scoped locally rather than globally so it does not change how `git pull` behaves everywhere else.
+That writes the `bubbleflow.*` keys into the repository's own config, plus a single `git land` alias. It also sets `pull.ff = only` and enables `rerere` for that repository, scoped locally rather than globally so it does not change how `git pull` behaves everywhere else.
+
+`git verify-bubble`, `git rebase-bubble` and `git bubble-absorb` need no alias at all: the installed symlinks are named `git-verify-bubble` and so on, which is how git discovers an external subcommand. Only `land` needs one, because its symlink is `git-land-bubble`.
 
 No branch name is built in. `--base` names the branch bubbles land on, are verified against, and are rebased onto. Without it, `setup` uses the branch `HEAD` is on. A repository that never ran `setup` has no base at all, and every command that needs one says so and asks for `--base`, `--onto` or `--target` rather than guessing.
 
@@ -129,7 +131,9 @@ This tags the branch first, then rebases with `--rebase-merges --update-refs` an
 
 ## Commands
 
-One multi-call binary, `git-bubble-flow`, with five subcommands. Each is also reachable through a symlink named for its git subcommand, which is how `git verify-bubble` resolves: git looks for a `git-verify-bubble` executable on `PATH`. The aliases written by `setup` point at the binary by absolute path, so they work regardless of `PATH`.
+One multi-call binary, `git-bubble-flow`, with five subcommands. Each is also reachable through a symlink named for its git subcommand, which is how `git verify-bubble` resolves: git looks for a `git-verify-bubble` executable on `PATH`.
+
+Nothing written into a repository names a path. The one alias `setup` writes is `land = land-bubble`, which sends git looking for `git-land-bubble` on `PATH` exactly as it would for any other subcommand. That is deliberate: an absolute path would name the versioned directory a `brew upgrade` deletes, and it would also travel to machines it is not true on when a config is synced or copied.
 
 | Command | Symlink / alias | What it does |
 |---|---|---|
@@ -137,7 +141,7 @@ One multi-call binary, `git-bubble-flow`, with five subcommands. Each is also re
 | `land [--target <branch>] [-m <summary>] [--strict]` | `git-land-bubble` / `git land` | Clean-tree and ancestry checks, tags the target's pre-merge tip, `--no-ff` merge, verifies exactly the new bubble, resets the target on failure. Merges in whichever worktree already holds the target, leaving you on your own branch. Never pushes, never rebases for you. The subject is `Merge <TICKET>: …` when the branch name carries a ticket and `Merge <branch>: …` when it does not. `--strict` requires the ticket. |
 | `rebase [--bubble <branch>] [--onto <base>]` | `git-rebase-bubble` / `git rebase-bubble` | `rebase --rebase-merges --update-refs` with rerere on the current branch (or `--bubble`), tagging first and verifying after. On verification failure it does **not** reset — it prints the reset command. |
 | `absorb [--base <ref>] [<git-absorb args>…]` | `git-bubble-absorb` / `git bubble-absorb` | Runs `git-absorb` down to the merge-base of `HEAD` and `bubbleflow.base`. Inside a nested bubble that is the enclosing bubble, so it never rewrites below it. |
-| `setup [--base <branch>]` | `bubble-flow-setup` | Writes the `bubbleflow.*` keys and the git aliases into the current repository. The base defaults to the branch `HEAD` is on. |
+| `setup [--base <branch>]` | `bubble-flow-setup` | Writes the `bubbleflow.*` keys and the `git land` alias into the current repository. The base defaults to the branch `HEAD` is on. |
 
 Also: `git-bubble-flow --help`, `git-bubble-flow --version`.
 

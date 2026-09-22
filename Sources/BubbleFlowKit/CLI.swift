@@ -47,26 +47,6 @@ public enum CLI {
         }
     }
 
-    /// Absolute path of the *canonical* binary, for the aliases `setup` writes.
-    ///
-    /// Symlinks must be resolved: when invoked through a shim, argv[0] (and, on
-    /// Darwin, `Bundle.main.executablePath`) is the shim's own path. Writing that
-    /// into an alias would make `git land` re-enter the binary as
-    /// `bubble-flow-setup`, which then rejects `land` as an unknown argument.
-    public static func executablePath(argv0: String) -> String {
-        let candidate: String
-        if let path = Sys.executablePath(), !path.isEmpty {
-            candidate = path
-        } else if argv0.contains("/") {
-            candidate = argv0
-        } else {
-            candidate = Git.resolve(program: argv0, path: Sys.environment("PATH") ?? "") ?? argv0
-        }
-        // realpath() follows the whole symlink chain, including cycles, which is
-        // what canonicalizing a shim invocation requires.
-        return Sys.realPath(candidate)
-    }
-
     static func basename(_ path: String) -> String {
         var name = String(path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last ?? "")
         if name.hasSuffix(".exe") { name = String(name.dropLast(4)) }
@@ -130,12 +110,7 @@ public enum CLI {
         case .absorb:
             return await BubbleAbsorb.run(arguments: rest, git: git, console: console)
         case .setup:
-            return await Setup.run(
-                arguments: rest,
-                git: git,
-                console: console,
-                executablePath: executablePath(argv0: argv0)
-            )
+            return await Setup.run(arguments: rest, git: git, console: console)
         }
     }
 
@@ -178,9 +153,10 @@ public enum CLI {
                   configured base.
 
               setup [--base <branch>]
-                  Write the bubbleflow.* config keys and git aliases into the
-                  current repository. The base defaults to the branch HEAD is
-                  on; no branch name is built in.
+                  Write the bubbleflow.* config keys and the 'git land' alias
+                  into the current repository. The base defaults to the branch
+                  HEAD is on; no branch name is built in. The other three
+                  commands need no alias: git finds their symlinks on PATH.
 
             Each command is also reachable through a symlink named for its git
             subcommand (git-verify-bubble, git-land-bubble, git-rebase-bubble,

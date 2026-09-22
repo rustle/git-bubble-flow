@@ -93,63 +93,6 @@
     fi
 }
 
-@test "setup writes aliases pointing at the canonical binary, not the invoking shim" {
-    # Regression: invoking setup through its symlink used to write the shim's
-    # own path into the alias, so `git land` re-entered as bubble-flow-setup.
-    repo="$(mktemp -d)"
-    cd "$repo"
-    git init -q .
-    git config user.name "Test User"
-    git config user.email "test@example.com"
-    bubble-flow-setup >/dev/null
-
-    run git config --get alias.land
-    [ "$status" -eq 0 ]
-    [[ "$output" == *" land" ]]
-    [[ "$output" != *"bubble-flow-setup"* ]]
-
-    cd /
-    rm -rf "$repo"
-}
-
-@test "setup refuses to write aliases through a hard-linked shim" {
-    # realpath resolves symlinks but not hard links, so a hard-linked shim
-    # reports its own path. Writing that into an alias would make `git land`
-    # re-enter the binary in setup mode and reject its own subcommand.
-    # Refusing loudly is the intended landing, not a placeholder: there is no
-    # canonical name for an inode with several equally real links.
-    # Created beside the binary: a hard link cannot cross filesystems, and in
-    # the container the binary lives on a bind mount while /tmp does not.
-    hard="$(dirname "$BUBBLE_FLOW_BINARY")/hardlink-test-$$"
-    mkdir -p "$hard"
-    if ! ln "$BUBBLE_FLOW_BINARY" "$hard/git-bubble-flow" 2>/dev/null; then
-        rm -rf "$hard"
-        skip "hard links unavailable on this filesystem"
-    fi
-    ln "$hard/git-bubble-flow" "$hard/bubble-flow-setup"
-
-    repo="$(mktemp -d)"
-    cd "$repo"
-    git init -q .
-    git config user.name "Test User"
-    git config user.email "test@example.com"
-
-    run env PATH="$hard:$PATH" "$hard/bubble-flow-setup"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"Refusing to write aliases"* ]]
-
-    # Nothing may be left half-written: the refusal happens before any write.
-    run git config --get alias.land
-    [ "$status" -ne 0 ]
-    run git config --local --get bubbleflow.base
-    [ "$status" -ne 0 ]
-    run git config --local --get rerere.enabled
-    [ "$status" -ne 0 ]
-
-    cd /
-    rm -rf "$repo" "$hard"
-}
-
 @test "setup writes repository config even when a global value shadows it" {
     # `git config --get` reads global and system too, so probing without
     # --local let a user's global rerere.enabled=false suppress the repo write.

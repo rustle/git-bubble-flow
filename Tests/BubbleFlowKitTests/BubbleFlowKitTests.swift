@@ -166,69 +166,137 @@ struct BaseResolutionTests {
     }
 }
 
-@Suite("Alias quoting")
+@Suite("Setup")
 struct SetupTests {
-    @Test("a plain path is left alone")
-    func plain() {
-        #expect(Setup.shellQuote("/usr/local/bin/git-bubble-flow") == "/usr/local/bin/git-bubble-flow")
+    /// A directory holding executables with the given names, for the PATH the
+    /// shim check reads.
+    private func makeShims(_ names: [String]) throws -> String {
+        let directory = "/tmp/bf-setup-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        for name in names {
+            let path = "\(directory)/\(name)"
+            try "#!/bin/sh\n".write(toFile: path, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        }
+        return directory
     }
 
-    @Test("a path with spaces survives the shell git runs aliases through")
-    func spaces() {
-        #expect(
-            Setup.shellQuote("/Users/a b/bin/git-bubble-flow") == "'/Users/a b/bin/git-bubble-flow'")
+    /// StubGit answers status 1 by default, so any key left out of `configured`
+    /// reads as unset and setup takes its first-run path for it.
+    private func runSetup(
+        _ arguments: [String] = [],
+        head: String = "main",
+        configured: [String: String] = [:],
+        searchPath: String = ""
+    ) async -> (Int32, StubGit, RecordingConsole) {
+        let git = StubGit()
+        let console = RecordingConsole()
+        git.stub(["rev-parse", "--git-dir"])
+        git.stub(["symbolic-ref", "--short", "HEAD"], stdout: "\(head)\n")
+        for (key, value) in configured {
+            git.stub(["config", "--local", "--get", key], stdout: "\(value)\n")
+        }
+        let status = await Setup.run(
+            arguments: arguments, git: git, console: console, searchPath: searchPath)
+        return (status, git, console)
+    }
+
+    @Test("the only alias written is land, and it names a subcommand")
+    func writesOneBareAlias() async throws {
+        let directory = try makeShims(CLI.Command.allCases.map(\.shimName))
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (status, git, _) = await runSetup(searchPath: directory)
+
+        #expect(status == 0)
+        let aliasWrites = git.passedThrough.filter { $0.count >= 2 && $0[1].hasPrefix("alias.") }
+        // A path here is what `brew upgrade` would invalidate, and the three
+        // other commands are reached through git's own PATH discovery.
+        #expect(aliasWrites == [["config", "alias.land", "land-bubble"]])
+    }
+
+    @Test("shims missing from PATH are a warning, not a refusal")
+    func warnsWhenShimsAreMissing() async {
+        let (status, git, console) = await runSetup(searchPath: "/nonexistent")
+
+        #expect(status == 0)
+        #expect(console.stderr.contains { $0.contains("git-land-bubble") })
+        // The warning must not cost the user their configuration.
+        #expect(git.passedThrough.contains(["config", "alias.land", "land-bubble"]))
+    }
+
+    @Test("an explicit --base overrides a configured base")
+    func explicitBaseWins() async {
+        // Keeping it would silently drop what the user typed, with nothing but
+        // a "(kept, already set)" line to say so.
+        let (status, git, _) = await runSetup(
+            ["--base", "develop"],
+            head: "some-feature",
+            configured: ["bubbleflow.base": "main", "bubbleflow.targets": "main"])
+
+        #expect(status == 0)
+        #expect(git.passedThrough.contains(["config", "bubbleflow.base", "develop"]))
+        // targets has to move with it. land reads targets while verify and
+        // rebase read base, so moving one alone leaves land merging into main.
+        #expect(git.passedThrough.contains(["config", "bubbleflow.targets", "develop"]))
+    }
+
+    @Test("without --base a configured base is kept, and the examples quote it")
+    func keptBaseIsQuoted() async {
+        let (status, git, console) = await runSetup(
+            head: "some-feature",
+            configured: ["bubbleflow.base": "main", "bubbleflow.targets": "main"])
+
+        #expect(status == 0)
+        #expect(!git.passedThrough.contains { $0.count > 1 && $0[1] == "bubbleflow.base" })
+        // The closing examples used to interpolate the branch HEAD is on, so
+        // they contradicted the configuration printed a few lines above.
+        #expect(console.stdout.contains("git rebase-bubble --onto origin/main"))
+        #expect(!console.stdout.contains { $0.contains("some-feature") })
+    }
+
+    @Test("a custom ticket pattern still survives a re-run")
+    func customPatternKept() async {
+        let (status, git, _) = await runSetup(
+            configured: ["bubbleflow.ticketPattern": "CUSTOM-[0-9]+"])
+
+        #expect(status == 0)
+        #expect(!git.passedThrough.contains { $0.count > 1 && $0[1] == "bubbleflow.ticketPattern" })
+    }
+
+    @Test("a PATH holding every shim warns about nothing")
+    func silentWhenShimsResolve() async throws {
+        let directory = try makeShims(CLI.Command.allCases.map(\.shimName))
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (status, _, console) = await runSetup(searchPath: directory)
+
+        #expect(status == 0)
+        #expect(console.stderr.isEmpty)
     }
 }
 
 @Suite("C string decoding")
 struct CStringTests {
-    @Test("a sized buffer decodes every byte it holds")
-    func decodesExactBytes() {
-        let buffer = Array("abc".utf8).map { CChar(bitPattern: $0) }
-        #expect(String(decoding: buffer[...]) == "abc")
-    }
-
-    @Test("an empty buffer decodes to an empty string")
-    func empty() {
-        #expect(String(decoding: [CChar]()[...]) == "")
-    }
-
-    @Test("invalid UTF-8 is repaired rather than trapping")
-    func invalidUTF8() {
-        let buffer: [CChar] = [CChar(bitPattern: 0xFF), 0x61]
-        #expect(String(decoding: buffer[...]) == "\u{FFFD}a")
-    }
-
-    @Test("a symlink target longer than the first buffer is read whole")
-    func readLinkGrowsPastTruncation() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("readlink-\(getpid())", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        // readlink only signals truncation by filling the buffer exactly, so
-        // hit that boundary on the first and second doublings as well as a
-        // target past them. macOS caps a target at its 1024-byte PATH_MAX.
-        for length in [255, 256, 512, 1000] {
-            let target = String(repeating: "x", count: length)
-            let link = dir.appendingPathComponent("link-\(length)").path
-            try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
-            #expect(Sys.readLink(link) == target)
-        }
-        #expect(Sys.readLink(dir.appendingPathComponent("missing").path) == nil)
-    }
-
-    @Test("the executable path is sized from the system's answer")
-    func executablePath() {
-        let path = Sys.executablePath()
-        #expect(path?.isEmpty == false)
-        #expect(path?.hasPrefix("/") == true)
-        #expect(path?.utf8.contains(0) == false)
-        #expect(path?.utf8.last != 0)
-    }
-
     @Test("a libc pointer decodes through strlen")
     func nulTerminatedPointer() {
-        #expect(Sys.environment("PATH") != nil)
+        // getenv is the only remaining source of such a pointer. Multi-byte
+        // content exercises the decode rather than just the lookup.
+        let name = "BF_DECODE_PROBE_\(UUID().uuidString.prefix(8))"
+        setenv(name, "héllo wörld/ünicode", 1)
+        defer { unsetenv(name) }
+        #expect(Sys.environment(name) == "héllo wörld/ünicode")
+    }
+
+    @Test("an absent variable is nil rather than empty")
+    func missingVariable() {
+        #expect(Sys.environment("BF_DECODE_PROBE_DEFINITELY_UNSET") == nil)
+    }
+
+    @Test("a variable set to the empty string decodes to an empty string")
+    func emptyVariable() {
+        let name = "BF_DECODE_EMPTY_\(UUID().uuidString.prefix(8))"
+        setenv(name, "", 1)
+        defer { unsetenv(name) }
+        #expect(Sys.environment(name) == "")
     }
 }
 

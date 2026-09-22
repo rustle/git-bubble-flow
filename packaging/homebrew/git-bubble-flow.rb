@@ -49,7 +49,7 @@ class GitBubbleFlow < Formula
       rewritten = s.gsub!(
         /\.package\(\s*url:\s*"[^"]*swift-subprocess[^"]*",\s*from:\s*"[^"]*",\s*traits:\s*\[\]\s*\),/m,
         '.package(path: "vendor/swift-subprocess", traits: []), ' \
-        '.package(path: "vendor/swift-system"),'
+        '.package(path: "vendor/swift-system"),',
       )
       # Without this the build silently falls back to resolving the dependency
       # from the network, which Homebrew forbids and which would fail late and
@@ -63,7 +63,7 @@ class GitBubbleFlow < Formula
     inreplace buildpath/"vendor/swift-subprocess/Package.swift" do |s|
       rewritten = s.gsub!(
         /\.package\(\s*url:\s*"[^"]*swift-system[^"]*",[^)]*\)/m,
-        '.package(path: "../swift-system")'
+        '.package(path: "../swift-system")',
       )
       odie "swift-subprocess dependency rewrite did not match" if rewritten.nil?
     end
@@ -83,8 +83,9 @@ class GitBubbleFlow < Formula
       Configure a repository with:
         cd /path/to/repo && bubble-flow-setup
 
-      That writes the bubbleflow.* config keys and the git aliases
-      (git land, git verify-bubble, git rebase-bubble, git bubble-absorb).
+      That writes the bubbleflow.* config keys and the `git land` alias.
+      git verify-bubble, git rebase-bubble and git bubble-absorb need no
+      alias: git finds their symlinks on PATH by itself.
     EOS
   end
 
@@ -105,10 +106,26 @@ class GitBubbleFlow < Formula
     # default, which is what a broken symlink install looks like.
     ENV["PATH"] = "#{bin}:#{ENV["PATH"]}"
     system bin/"bubble-flow-setup"
-    alias_value = shell_output("git -C #{testpath} config --get alias.land").strip
-    assert_match %r{#{bin}/git-bubble-flow land\z}, alias_value
 
-    output = shell_output("#{bin}/git-verify-bubble --base HEAD HEAD", 0)
+    # Nothing written into the repository may name a path. An absolute one
+    # would point into this versioned keg, which the next `brew upgrade`
+    # deletes, breaking `git land` in every configured repository.
+    alias_value = shell_output("git -C #{testpath} config --get alias.land").strip
+    assert_equal "land-bubble", alias_value
+    # git config --get exits 1 for a key that is not there.
+    %w[verify-bubble rebase-bubble bubble-absorb].each do |name|
+      assert_empty shell_output("git -C #{testpath} config --get alias.#{name}", 1).strip
+    end
+
+    # Dispatch through git itself, not through the shim directly: that is the
+    # path a user takes, and the only one that exercises alias expansion and
+    # git's external-subcommand lookup.
+    output = shell_output("git -C #{testpath} verify-bubble --base HEAD HEAD")
     assert_match "No bubbles found to verify", output
+
+    # Reaching our own argument error proves `git land` resolved through the
+    # alias into the binary rather than dying in git as an unknown command.
+    output = shell_output("git -C #{testpath} land --target 2>&1", 1)
+    assert_match "--target requires a value", output
   end
 end

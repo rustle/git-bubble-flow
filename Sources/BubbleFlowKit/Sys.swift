@@ -21,13 +21,12 @@ import Musl
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
-import MachO  // _NSGetExecutablePath
 #else
 #error("Unsupported platform: no libc module")
 #endif
 
-/// POSIX odds and ends: environment lookup, executable discovery, symlink resolution,
-/// stream writing, wall-clock time and exit.
+/// POSIX odds and ends: environment lookup, executable tests, stream writing,
+/// wall-clock time and exit.
 ///
 /// Exists so nothing here has to import Foundation. Foundation's pure-Swift
 /// surface is free — `--gc-sections` strips an unused `import Foundation`
@@ -62,54 +61,6 @@ public enum Sys {
     public static func pathExists(_ path: String) -> Bool {
         var info = stat()
         return stat(path, &info) == 0
-    }
-
-    /// Resolves every symlink in `path`. Returns the input unchanged when the
-    /// path cannot be resolved, so callers always get something usable.
-    public static func realPath(_ path: String) -> String {
-        guard let resolved = realpath(path, nil) else { return path }
-        defer { free(resolved) }
-        return String(decodingNulTerminated: resolved)
-    }
-
-    /// Absolute path of the running executable, before symlink resolution.
-    ///
-    /// Both branches follow Rust's `std::env::current_exe`: size the buffer
-    /// from what the kernel or dyld reports rather than assuming `PATH_MAX`,
-    /// which deep directories can exceed.
-    public static func executablePath() -> String? {
-        #if canImport(Darwin)
-        // With a zero-size buffer the call fails and writes the required
-        // size, terminator included, so the second call's buffer is exact
-        // and `size` is the length. On success dyld leaves `size` unchanged.
-        var size = UInt32(0)
-        _NSGetExecutablePath(nil, &size)
-        guard size > 1 else { return nil }
-        var buffer = [CChar](repeating: 0, count: Int(size))
-        guard _NSGetExecutablePath(&buffer, &size) == 0 else { return nil }
-        return String(decoding: buffer[0..<Int(size) - 1])
-        #else
-        // The kernel caps this link at PATH_MAX, so start there and the loop
-        // only iterates if the platform's limit turns out to be wrong.
-        return readLink("/proc/self/exe", capacity: Int(PATH_MAX))
-        #endif
-    }
-
-    /// Target of the symlink at `path`, or nil if it cannot be read.
-    ///
-    /// `readlink` neither NUL-terminates nor reports truncation: a result
-    /// equal to the buffer size is the only signal, so grow from `capacity`
-    /// until the result is shorter than the buffer. Callers that know the
-    /// platform's bound for a particular link can start there.
-    static func readLink(_ path: String, capacity: Int = 256) -> String? {
-        var capacity = capacity
-        while true {
-            var buffer = [CChar](repeating: 0, count: capacity)
-            let count = readlink(path, &buffer, capacity)
-            guard count > 0 else { return nil }
-            if count < capacity { return String(decoding: buffer[0..<count]) }
-            capacity *= 2
-        }
     }
 
     // MARK: - Output
@@ -178,15 +129,11 @@ public enum Sys {
 }
 
 extension String {
-    init(decoding bytes: ArraySlice<CChar>) {
-        self = bytes.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
-    }
-
     /// Decodes a NUL-terminated string from a pointer returned by libc.
     ///
     /// `strlen` is sound here only because the pointer comes from an API that
-    /// guarantees termination, such as `getenv` or `realpath`.
-    fileprivate init(decodingNulTerminated pointer: UnsafeMutablePointer<CChar>) {
+    /// guarantees termination, such as `getenv`.
+    init(decodingNulTerminated pointer: UnsafeMutablePointer<CChar>) {
         let count = Int(strlen(pointer))
         self = pointer.withMemoryRebound(to: UInt8.self, capacity: count) { bytes in
             String(decoding: UnsafeBufferPointer(start: bytes, count: count), as: UTF8.self)
