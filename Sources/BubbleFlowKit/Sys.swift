@@ -63,6 +63,34 @@ public enum Sys {
         return stat(path, &info) == 0
     }
 
+    /// Writes `contents` to a new or truncated file readable only by its
+    /// owner. Used for the patches `git apply` reads, which has no other way
+    /// in short of stdin.
+    public static func writeFile(_ path: String, _ contents: String) -> Bool {
+        let descriptor = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        let bytes = Array(contents.utf8)
+        var offset = 0
+        while offset < bytes.count {
+            let written = bytes[offset...].withUnsafeBufferPointer { buffer in
+                writeRaw(descriptor, buffer.baseAddress!, buffer.count)
+            }
+            if written > 0 {
+                offset += written
+            } else if written < 0 && errno == EINTR {
+                continue
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+
+    public static func makeDirectory(_ path: String) -> Bool {
+        mkdir(path, 0o700) == 0 || errno == EEXIST
+    }
+
     // MARK: - Output
 
     /// Writes every byte, retrying short writes and EINTR.

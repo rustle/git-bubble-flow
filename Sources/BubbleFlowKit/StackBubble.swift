@@ -22,6 +22,8 @@ public enum StackBubble {
                git stack-bubble restack [--stack <name>] [--from <bubble>] [--keep-base]
                git stack-bubble restack --continue | --abort | --break-lock [--stack <name>]
                git stack-bubble sync [--stack <name>] [--dry-run] [<branch>...]
+               git stack-bubble new <branch> [--stack <name>]
+               git stack-bubble route [--stack <name>] [--to <bubble>] [-m <message>] [--dry-run] [--no-restack]
         """
 
     public static func run(
@@ -45,6 +47,10 @@ public enum StackBubble {
             return await Restack.run(arguments: rest, git: git, console: console, hooks: hooks, now: now)
         case "sync":
             return await Sync.run(arguments: rest, git: git, console: console, now: now)
+        case "new":
+            return await newBranch(arguments: rest, git: git, console: console)
+        case "route":
+            return await Route.run(arguments: rest, git: git, console: console, hooks: hooks, now: now)
         case "-h", "--help", "help":
             console.out(usage)
             return 0
@@ -302,6 +308,105 @@ public enum StackBubble {
 
         console.out("Created stack '\(name)' on \(remote) (\(ref)):")
         printManifest(manifest, console: console)
+        return 0
+    }
+
+    // MARK: - new
+
+    /// Starts a branch at the umbrella's tip and registers it as pending, so
+    /// every clone's restack carries it along until it lands.
+    ///
+    /// The branch and the manifest are published in one atomic push: a pending
+    /// branch that exists only here would be missing from every other clone's
+    /// restack.
+    static func newBranch(arguments: [String], git: any GitRunning, console: any Console) async -> Int32 {
+        var requested: String?
+        var branch: String?
+        var scanner = ArgumentScanner(arguments)
+        while let argument = scanner.peek {
+            switch argument {
+            case "--stack":
+                guard let value = scanner.takeValue(for: argument) else {
+                    console.err("ERROR: --stack requires a value")
+                    return 1
+                }
+                requested = value
+            case let other where other.hasPrefix("-"):
+                console.err("Unknown argument: \(other)")
+                return 1
+            case let other:
+                guard branch == nil else {
+                    console.err("ERROR: Only one branch may be given")
+                    return 1
+                }
+                branch = other
+                scanner.advance()
+            }
+        }
+        func error(_ message: String) { console.err("ERROR: \(message)") }
+        guard let branch else {
+            console.err(usage)
+            return 1
+        }
+        guard await git.succeeds("check-ref-format", "--branch", branch), !branch.hasPrefix("-") else {
+            error("'\(branch)' is not a valid branch name.")
+            return 1
+        }
+        guard let name = await resolveName(requested, git: git, console: console) else { return 1 }
+        let stack = StackGit(git: git)
+        let remote = await remote(for: name, git: git)
+        guard await git.passthrough(["fetch", "--quiet", "--end-of-options", remote], config: [:]) == 0 else {
+            return 1
+        }
+        guard let (manifest, sha) = await fetchManifest(name: name, remote: remote, git: git, console: console)
+        else { return 1 }
+        if let lock = manifest.lock {
+            error("'\(name)' is being restacked by \(lock.by). Start the branch once it is published.")
+            return 1
+        }
+        let existingLocal = await stack.sha("refs/heads/\(branch)")
+        let existingRemote = await stack.sha("refs/remotes/\(remote)/\(branch)")
+        if existingLocal != nil || existingRemote != nil {
+            error("'\(branch)' already exists.")
+            return 1
+        }
+        guard let tip = await stack.sha("refs/remotes/\(remote)/\(manifest.umbrella)") else {
+            error("'\(remote)/\(manifest.umbrella)' does not exist.")
+            return 1
+        }
+
+        var next = manifest
+        next.pending.append(branch)
+        next.rewrites = []
+        next.notes = ["pending \(branch) added by \(await stack.identity())"]
+        guard let commit = await stack.recordCommit(message: next.encoded(), parent: sha) else {
+            error("Could not write the manifest.")
+            return 1
+        }
+        let ref = StackManifest.ref(for: name)
+        let pushed = await stack.push(
+            remote: remote,
+            updates: [
+                .init(ref: ref, new: commit, expected: sha),
+                .init(ref: "refs/heads/\(branch)", new: tip, expected: nil),
+            ])
+        guard pushed.succeeded else {
+            console.err(String(pushed.standardError.trimmedWhitespace()))
+            error("Could not publish '\(branch)': the stack or the branch changed on '\(remote)'. Try again.")
+            return 1
+        }
+        _ = await git.capture(["update-ref", ref, commit], config: [:])
+        _ = await git.capture(["fetch", "--quiet", "--end-of-options", remote, branch], config: [:])
+
+        let created = await git.capture(
+            ["switch", "--quiet", "--create", branch, "--track", "\(remote)/\(branch)"], config: [:])
+        guard created.succeeded else {
+            console.err(String(created.standardError.trimmedWhitespace()))
+            console.out("'\(branch)' is published and pending in '\(name)', but could not be checked out here.")
+            return 1
+        }
+        console.out("Started '\(branch)' at the tip of \(manifest.umbrella), pending in '\(name)'.")
+        console.out("Land it into \(manifest.umbrella) with 'git land' when it is ready; restack adopts it as a bubble.")
         return 0
     }
 

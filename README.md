@@ -146,6 +146,15 @@ git stack-bubble restack --continue
 
 # Everyone else, after a restack is published:
 git stack-bubble sync
+
+# A fix found while testing the umbrella: stage it there, and route sends
+# each hunk to the bubble whose lines it changes.
+git checkout feature/interesting-feature
+git add -p
+git stack-bubble route
+
+# New work that will become a bubble:
+git stack-bubble new ABC-42-next-part
 ```
 
 `restack` takes a lock in the manifest, then rebuilds the umbrella one bubble at a time in a worktree of its own: each sub-branch's landed commits are replayed onto the new previous merge with `rerere`, the repository's `stack.exec` gate runs, and a new empty merge is made with the old merge's message. A bubble with nothing moved below it is kept as it is. Nothing moves until every bubble is rebuilt. Then one `git push --atomic`, with an explicit lease per ref, moves the umbrella, every sub-branch and the manifest together, and the manifest records each old→new commit for the engineers who pull next. Local branches that moved are tagged under `backup/restack-<stack>-<timestamp>/` first, and a branch checked out in a worktree follows by `reset --keep`.
@@ -153,6 +162,10 @@ git stack-bubble sync
 A sub-branch with commits that never landed is refused, because replaying it would silently change its bubble. `--from <bubble>` takes such commits (or a sub-branch rewritten on purpose) for that bubble onward, and `--keep-base` does so without moving onto the new base. Bubbles landed on the umbrella since the last restack join the stack automatically. `--abort` drops the work and releases the lock. `--break-lock` releases a lock whose restack died; that restack can then no longer publish.
 
 `sync` brings a clone onto what was published, deciding from the manifest's old→new pairs rather than from the reflog `git pull --rebase` relies on, which is wrong after a missed generation or an editor's background fetch. A stack branch follows its remote-tracking ref. Any other local branch built on a commit a restack rewrote — work forked from last week's umbrella tip, or from a sub-branch — has its own commits replayed onto that commit's newest equivalent, however many generations were missed. Branches never built on the stack are left alone. A branch whose replay conflicts is left as it was, with the `git rebase` command that would move it, and the rest are still synced. Every moved branch is tagged under `backup/sync-<stack>-<timestamp>/` first, and `--dry-run` shows the plan. `sync` never pushes, and refuses while the stack is locked.
+
+`route` turns fixes staged on the umbrella into fixups on the bubbles that own the lines. Each staged hunk is blamed against the umbrella: changed and deleted lines by themselves, a pure addition by the lines either side of it. The commit that wrote them names the bubble. A hunk that is a new file, spans two bubbles, or touches lines from outside every bubble is not guessed at: route refuses and lists it, and `--to <bubble>` sends everything staged to one bubble instead. Each bubble's hunks are cherry-picked onto its sub-branch in a scratch worktree, so lines later bubbles shifted still line up, then `bubble-absorb --force-author` folds them into the commits that wrote those lines, with the bubble's previous merge as the floor. What absorb cannot place becomes a commit of its own. No branch moves until every bubble's fix has folded. The staged fix is then stashed for reference, and route runs `restack --from <earliest bubble> --keep-base`, so it publishes without dragging in base changes. `--no-restack` stops before that, and `--dry-run` only prints where each hunk would go.
+
+`new <branch>` starts a branch at the umbrella's tip, registers it as pending, and publishes both in one atomic push, so every clone's restack carries it. Once it lands into the umbrella with `git land`, the next restack adopts it as a bubble.
 
 ## Commands
 
@@ -169,6 +182,8 @@ Nothing written into a repository names a path. The one alias `setup` writes is 
 | `stack init <name> --umbrella <branch> [--base <branch>] [--remote <remote>] [--pending <branch>]…` | `git-stack-bubble` / `git stack-bubble init` | Publishes `refs/stack/<name>`, recording the umbrella's bubbles and their sub-branches. `--pending` names unlanded branches built on the umbrella, which restack rebases without landing. Sets `bubbleflow.stack` if unset. |
 | `stack show [--stack <name>]` | `git stack-bubble show` | Fetches and prints the manifest, including who holds the lock. |
 | `stack restack [--stack <name>] [--from <bubble>] [--keep-base]`, `--continue`, `--abort`, `--break-lock` | `git stack-bubble restack` | Rebuilds the umbrella bubble by bubble onto its base and publishes it in one atomic, leased push. The only command that pushes. |
+| `stack route [--stack <name>] [--to <bubble>] [-m <message>] [--dry-run] [--no-restack]` | `git stack-bubble route` | Blames each hunk staged on the umbrella to its bubble, folds it into that bubble's sub-branch with `bubble-absorb`, then restacks from the earliest bubble touched. |
+| `stack new <branch> [--stack <name>]` | `git stack-bubble new` | Starts a branch at the umbrella's tip and publishes it as pending, together with the manifest. |
 | `stack sync [--stack <name>] [--dry-run] [<branch>…]` | `git stack-bubble sync` | Moves local stack branches to the published stack and replays local work built on rewritten commits onto their new equivalents. All local branches unless some are named. |
 | `setup [--base <branch>]` | `bubble-flow-setup` | Writes the `bubbleflow.*` keys and the `git land` alias into the current repository. The base defaults to the branch `HEAD` is on. |
 

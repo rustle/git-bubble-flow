@@ -453,3 +453,120 @@ restack_from_first() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"being restacked by test@example.com"* ]]
 }
+
+@test "route folds a fix staged on the umbrella into the bubble that wrote the lines" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    abc1_merge="$(git rev-parse feature~2)"
+    git checkout -q feature
+    echo "part 2 fixed" > part2.txt
+    git add part2.txt
+
+    run git stack-bubble route
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"part2.txt @@ -1 +1 @@ → ABC-2"* ]]
+
+    git fetch -q origin
+    [ "$(git show origin/feature:part2.txt)" = "part 2 fixed" ]
+    run git verify-bubble --base origin/develop origin/feature
+    [ "$status" -eq 0 ]
+    # Absorbed into the commit that wrote the line, not added on top.
+    [ "$(git rev-list --count origin/feature~2..origin/ABC-2-part)" -eq 1 ]
+    [ "$(git log -1 --format=%s origin/ABC-2-part)" = "Part 2" ]
+    # Nothing below ABC-2 was rebuilt, and the checkout followed.
+    [ "$(git rev-parse origin/feature~2)" = "$abc1_merge" ]
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/feature)" ]
+    git diff --quiet HEAD
+    [[ "$(git stash list)" == *"stack-bubble route: routed into ABC-2"* ]]
+}
+
+@test "route splits hunks across bubbles and places pure additions by their context" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    git checkout -q feature
+    echo "part 1 fixed" > part1.txt
+    echo "part 3 continued" >> part3.txt
+    git add part1.txt part3.txt
+
+    run git stack-bubble route
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"part1.txt"*"→ ABC-1"* ]]
+    [[ "$output" == *"part3.txt"*"→ ABC-3"* ]]
+
+    git fetch -q origin
+    [ "$(git show origin/ABC-1-part:part1.txt)" = "part 1 fixed" ]
+    [ "$(git show origin/ABC-3-part:part3.txt | tail -1)" = "part 3 continued" ]
+    run git verify-bubble --base origin/develop origin/feature
+    [ "$status" -eq 0 ]
+}
+
+@test "route refuses a new file until --to names its bubble" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    git checkout -q feature
+    echo "brand new" > new.txt
+    git add new.txt
+
+    run git stack-bubble route
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"new.txt: a new file"* ]]
+    [ "$(git ls-remote origin refs/heads/feature | cut -f1)" = "$(git rev-parse HEAD)" ]
+
+    run git stack-bubble route --to ABC-3 -m "Add new.txt"
+    [ "$status" -eq 0 ]
+    git fetch -q origin
+    [ "$(git log -1 --format=%s origin/ABC-3-part)" = "Add new.txt" ]
+    [ "$(git show origin/feature:new.txt)" = "brand new" ]
+}
+
+@test "route --dry-run prints the plan and changes nothing" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    git checkout -q feature
+    echo "part 2 fixed" > part2.txt
+    git add part2.txt
+    before="$(git rev-parse ABC-2-part)"
+
+    run git stack-bubble route --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"→ ABC-2"* ]]
+    [ "$(git rev-parse ABC-2-part)" = "$before" ]
+    [ -n "$(git diff --cached --name-only)" ]
+}
+
+@test "route only works from the umbrella" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    run git stack-bubble route
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Check out 'feature' first"* ]]
+}
+
+@test "new starts a pending branch at the tip and publishes it with the manifest" {
+    git stack-bubble init s --umbrella feature >/dev/null
+
+    run git stack-bubble new ABC-7-next
+    [ "$status" -eq 0 ]
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "ABC-7-next" ]
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/feature)" ]
+    [ "$(git ls-remote origin refs/heads/ABC-7-next | cut -f1)" = "$(git rev-parse HEAD)" ]
+    run git stack-bubble show
+    [[ "$output" == *"pending   ABC-7-next"* ]]
+
+    run git stack-bubble new ABC-7-next
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"already exists"* ]]
+}
+
+@test "a pending branch that lands becomes a bubble at the next restack" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    git stack-bubble new ABC-7-next >/dev/null
+    echo "part 7" > part7.txt
+    git add part7.txt
+    git commit -qm "Part 7"
+    git land --target feature -m "part 7" >/dev/null
+    git push -q origin feature ABC-7-next
+    advance_develop other.txt "new on develop"
+
+    run git stack-bubble restack
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"'ABC-7-next' has landed"* ]]
+    run git stack-bubble show
+    [[ "$output" == *"4. ABC-7"*"ABC-7-next"* ]]
+    [[ "$output" != *"pending"* ]]
+}

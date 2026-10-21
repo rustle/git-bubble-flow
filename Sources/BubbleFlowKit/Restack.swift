@@ -219,9 +219,15 @@ enum Restack {
                 }
                 var content = parents[1]
                 if let branch = bubble.branch {
-                    guard let entry = await tip(of: branch, remote: remote) else { return 1 }
+                    // From --from on, a local sub-branch ahead of its remote is
+                    // what is taken: that is how `route` hands restack its
+                    // fixups. The lease is still on the remote's position.
+                    let takesLocal = fromIndex.map { index >= $0 } ?? false
+                    guard let entry = await tip(of: branch, remote: remote, allowLocalChanges: takesLocal)
+                    else { return 1 }
                     state.tips.append(entry)
-                    if let moved = entry.remote ?? entry.local, moved != parents[1] {
+                    let current = takesLocal ? (entry.local ?? entry.remote) : (entry.remote ?? entry.local)
+                    if let moved = current, moved != parents[1] {
                         if let fromIndex, index >= fromIndex, moved != parents[0],
                             await stack.isAncestor(parents[0], of: moved)
                         {
@@ -256,6 +262,11 @@ enum Restack {
                     error("Pending branch '\(branch)' no longer exists. Remove it from the stack first.")
                     return 1
                 }
+                // Landed since: it is a bubble now, adopted above.
+                if await stack.isAncestor(pendingTip, of: umbrellaTip) {
+                    console.out("Pending branch '\(branch)' has landed; it is no longer pending.")
+                    continue
+                }
                 guard let fork = await stack.mergeBase(pendingTip, umbrellaTip),
                     let forkPosition = firstParents.firstIndex(of: fork)
                 else {
@@ -271,7 +282,7 @@ enum Restack {
             if state.bubbles.isEmpty, state.pending.isEmpty { state.stage = .publish }
 
             let unchanged =
-                state.newBase == oldBase && adopted.isEmpty
+                state.newBase == oldBase && adopted.isEmpty && state.pending.count == manifest.pending.count
                 && state.bubbles.allSatisfy { $0.content == $0.oldSecondParent }
             if unchanged {
                 console.out("'\(name)' is already on \(remote)/\(manifest.base) and nothing in it moved.")
@@ -342,10 +353,10 @@ enum Restack {
         /// A branch's tip on the remote and locally, refusing when both exist
         /// and disagree: the remote is what restack rewrites and leases
         /// against, and a local branch that differs would be overwritten.
-        func tip(of branch: String, remote: String) async -> RestackState.Tip? {
+        func tip(of branch: String, remote: String, allowLocalChanges: Bool = false) async -> RestackState.Tip? {
             let remoteTip = await stack.sha("refs/remotes/\(remote)/\(branch)")
             let localTip = await stack.sha("refs/heads/\(branch)")
-            if let remoteTip, let localTip, remoteTip != localTip {
+            if let remoteTip, let localTip, remoteTip != localTip, !allowLocalChanges {
                 error("Local '\(branch)' differs from '\(remote)/\(branch)'. Push or reset it first.")
                 return nil
             }
@@ -649,6 +660,7 @@ enum Restack {
             next.generation += 1
             next.lock = nil
             next.bubbles = bubbles
+            next.pending = state.pending.map(\.branch)
             next.rewrites = rewrites
             next.notes = ["restacked by \(await stack.identity()) onto \(state.newBase)"]
             guard let manifestCommit = await stack.recordCommit(message: next.encoded(), parent: state.lockedManifest)

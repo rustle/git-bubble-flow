@@ -179,6 +179,16 @@ public enum CLI {
                   commit a restack rewrote is replayed onto its new
                   equivalent. Never pushes.
 
+              stack route [--stack <name>] [--to <bubble>] [-m <message>]
+                    [--dry-run] [--no-restack]
+                  Send each hunk staged on the umbrella to the bubble whose
+                  lines it changes, fold it in with bubble-absorb, then
+                  restack from the earliest bubble touched.
+
+              stack new <branch> [--stack <name>]
+                  Start a branch at the umbrella's tip and publish it as
+                  pending in the manifest.
+
               setup [--base <branch>]
                   Write the bubbleflow.* config keys and the 'git land' alias
                   into the current repository. The base defaults to the branch

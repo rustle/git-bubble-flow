@@ -693,3 +693,65 @@ struct SyncTests {
         #expect(Sync.parse(["--nope"], console: RecordingConsole()) == nil)
     }
 }
+
+@Suite("stack-bubble route")
+struct RouteTests {
+    static let diff = """
+        diff --git a/one.txt b/one.txt
+        index 1111111..2222222 100644
+        --- a/one.txt
+        +++ b/one.txt
+        @@ -3 +3 @@ context
+        -old
+        +new
+        @@ -9,0 +10,2 @@
+        +added
+        +\tmore
+        diff --git a/new file.txt b/new file.txt
+        new file mode 100644
+        index 0000000..3333333
+        --- /dev/null
+        +++ b/new file.txt\t
+        @@ -0,0 +1 @@
+        +hello
+        \\ No newline at end of file
+
+        """
+
+    @Test("a -U0 diff splits into files and hunks, verbatim")
+    func parsesDiff() {
+        let files = Route.parseDiff(Self.diff)
+        #expect(files.map(\.path) == ["one.txt", "new file.txt"])
+        #expect(files[0].hunks.count == 2)
+        #expect(files[0].hunks[0].oldStart == 3)
+        #expect(files[0].hunks[0].oldCount == 1)
+        #expect(files[0].hunks[1].oldCount == 0)
+        #expect(files[0].hunks[1].lines == ["@@ -9,0 +10,2 @@", "+added", "+\tmore"])
+        #expect(!files[0].isNew)
+        #expect(files[1].isNew)
+        #expect(files[1].hunks[0].lines.last == "\\ No newline at end of file")
+    }
+
+    @Test("a patch of chosen hunks keeps the file header")
+    func rebuildsPatch() {
+        let file = Route.parseDiff(Self.diff)[0]
+        let lines = Route.patch(file, hunks: [file.hunks[1]])
+        #expect(lines.first == "diff --git a/one.txt b/one.txt")
+        #expect(!lines.contains("-old"))
+        #expect(lines.contains("+added"))
+    }
+
+    @Test("changed lines are blamed themselves, additions by the lines either side")
+    func blameLines() {
+        #expect(Route.blameLines(for: .init(oldStart: 4, oldCount: 2, lines: [])) == [4, 5])
+        #expect(Route.blameLines(for: .init(oldStart: 9, oldCount: 0, lines: [])) == [9, 10])
+        #expect(Route.blameLines(for: .init(oldStart: 0, oldCount: 0, lines: [])) == [1])
+    }
+
+    @Test("--to, -m and the switches parse")
+    func parsing() throws {
+        let options = try #require(
+            Route.parse(["--to", "ABC-2", "-m", "-fix", "--dry-run", "--no-restack"], console: RecordingConsole()))
+        #expect(options == Route.Options(stack: nil, to: "ABC-2", message: "-fix", dryRun: true, restack: false))
+    }
+}
