@@ -173,6 +173,12 @@ public enum CLI {
                   explicit leases. Stops on a conflict for --continue. --from
                   takes commits added to a sub-branch since it landed.
 
+              stack sync [--stack <name>] [--dry-run] [<branch>...]
+                  Bring local branches onto the stack as last published:
+                  stack branches follow the remote, and a branch built on a
+                  commit a restack rewrote is replayed onto its new
+                  equivalent. Never pushes.
+
               setup [--base <branch>]
                   Write the bubbleflow.* config keys and the 'git land' alias
                   into the current repository. The base defaults to the branch

@@ -610,24 +610,39 @@ enum Restack {
 
             // Every new position, branch by branch.
             var moves: [String: String] = [locked.umbrella: newTip]
+            // The first pair recorded for a commit wins, so the commit-by-commit
+            // pairs go in before the coarser tip-to-tip ones.
             var rewrites: [StackManifest.Rewrite] = []
+            var rewritten: Set<String> = []
             func rewrite(_ old: String, _ new: String) {
-                if old != new, !rewrites.contains(where: { $0.old == old }) {
+                if old != new, rewritten.insert(old).inserted {
                     rewrites.append(.init(old: old, new: new))
                 }
             }
-            if let oldTip = state.bubbles.last?.oldMerge { rewrite(oldTip, newTip) }
             var bubbles: [StackManifest.Bubble] = []
-            for (bubble, built) in zip(state.bubbles, state.built) {
+            for (index, (bubble, built)) in zip(state.bubbles, state.built).enumerated() {
                 bubbles.append(.init(merge: built.merge, label: bubble.label, branch: bubble.branch))
-                rewrite(bubble.oldMerge, built.merge)
-                rewrite(bubble.oldSecondParent, built.secondParent)
-                rewrite(bubble.content, built.secondParent)
                 if let branch = bubble.branch { moves[branch] = built.secondParent }
+                guard built.merge != bubble.oldMerge else { continue }
+                for pair in await stack.pairReplayed(
+                    old: (bubble.oldFirstParent, bubble.content),
+                    new: (newFirstParent(of: index, in: state), built.secondParent))
+                {
+                    rewrite(pair.old, pair.new)
+                }
+                rewrite(bubble.oldMerge, built.merge)
+                rewrite(bubble.content, built.secondParent)
+                rewrite(bubble.oldSecondParent, built.secondParent)
             }
+            if let oldTip = state.bubbles.last?.oldMerge { rewrite(oldTip, newTip) }
             for (entry, rebuilt) in zip(state.pending, state.rebuiltPending) {
-                rewrite(entry.tip, rebuilt)
                 moves[entry.branch] = rebuilt
+                guard rebuilt != entry.tip else { continue }
+                let (oldFork, newFork) = forks(of: entry, in: state)
+                for pair in await stack.pairReplayed(old: (oldFork, entry.tip), new: (newFork, rebuilt)) {
+                    rewrite(pair.old, pair.new)
+                }
+                rewrite(entry.tip, rebuilt)
             }
 
             var next = locked
@@ -662,7 +677,9 @@ enum Restack {
             let worktrees = await Worktree.list(git: git)
             for tip in state.tips {
                 guard let local = tip.local, let new = moves[tip.branch], new != local else { continue }
-                await moveLocal(tip.branch, from: local, to: new, backup: "\(backupPrefix)/\(tip.branch)", worktrees: worktrees)
+                await stack.moveLocal(
+                    tip.branch, from: local, to: new, backup: "\(backupPrefix)/\(tip.branch)",
+                    worktrees: worktrees, console: console)
             }
 
             _ = await git.capture(["worktree", "remove", "--force", state.worktree], config: [:])
@@ -672,30 +689,6 @@ enum Restack {
             console.out("Restacked '\(name)' onto \(String(state.newBase.prefix(12))): generation \(next.generation).")
             console.out("Local branches that moved are backed up under \(backupPrefix)/.")
             return 0
-        }
-
-        /// Moves a local branch to its rebuilt commit, after tagging where it
-        /// was. A branch checked out in a worktree moves by `reset --keep`
-        /// there, so the files follow it and uncommitted work is kept or the
-        /// move refused. A branch that moved since restack read it is left
-        /// alone, with the command that would move it.
-        func moveLocal(_ branch: String, from old: String, to new: String, backup: String, worktrees: [Worktree]) async {
-            _ = await git.capture(["tag", backup, old], config: [:])
-            if let holder = worktrees.first(where: { $0.branch == "refs/heads/\(branch)" }) {
-                let there = WorktreeGit(path: holder.path, git: git)
-                let head = await there.capture(["rev-parse", "HEAD"], config: [:]).value
-                if head == old, await stack.rebaseInProgress(worktree: holder.path) == false,
-                    await there.capture(["reset", "--quiet", "--keep", new], config: [:]).succeeded
-                {
-                    return
-                }
-                console.out(
-                    "Left '\(branch)' at \(holder.path) where it was. Move it with: git reset --keep \(new)")
-                return
-            }
-            if await git.capture(["update-ref", "refs/heads/\(branch)", new, old], config: [:]).succeeded == false {
-                console.out("Left local '\(branch)' alone: it moved during the restack. The rebuilt commit is \(new).")
-            }
         }
 
         // MARK: - --abort and --break-lock

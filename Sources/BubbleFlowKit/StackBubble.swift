@@ -21,6 +21,7 @@ public enum StackBubble {
                git stack-bubble show [--stack <name>]
                git stack-bubble restack [--stack <name>] [--from <bubble>] [--keep-base]
                git stack-bubble restack --continue | --abort | --break-lock [--stack <name>]
+               git stack-bubble sync [--stack <name>] [--dry-run] [<branch>...]
         """
 
     public static func run(
@@ -42,6 +43,8 @@ public enum StackBubble {
             return await show(arguments: rest, git: git, console: console)
         case "restack":
             return await Restack.run(arguments: rest, git: git, console: console, hooks: hooks, now: now)
+        case "sync":
+            return await Sync.run(arguments: rest, git: git, console: console, now: now)
         case "-h", "--help", "help":
             console.out(usage)
             return 0

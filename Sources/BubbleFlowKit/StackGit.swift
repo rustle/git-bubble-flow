@@ -137,6 +137,75 @@ struct StackGit {
         return Sys.pathExists("\(gitDir.value)/rebase-merge") || Sys.pathExists("\(gitDir.value)/rebase-apply")
     }
 
+    /// Old→new pairs for the commits a rebase replayed, matched by position.
+    ///
+    /// A rebase keeps the order and shape of what it replays, so the two
+    /// ranges list in the same topological order. Pairs are kept only when
+    /// both ranges hold the same number of commits with the same subjects in
+    /// that order: a commit the rebase dropped as already upstream would shift
+    /// every pair after it, and a wrong pair would send `sync` to the wrong
+    /// fork point.
+    func pairReplayed(old: (from: String, to: String), new: (from: String, to: String)) async
+        -> [StackManifest.Rewrite]
+    {
+        func list(_ range: (from: String, to: String)) async -> [(sha: String, subject: String)]? {
+            let result = await git.capture(
+                ["log", "--topo-order", "--reverse", "--format=%H %s", "\(range.from)..\(range.to)"], config: [:])
+            guard result.succeeded else { return nil }
+            return result.lines.map { line in
+                let sha = line.prefix { $0 != " " }
+                return (String(sha), String(line.dropFirst(sha.count + 1)))
+            }
+        }
+        guard let before = await list(old), let after = await list(new), before.count == after.count,
+            zip(before, after).allSatisfy({ $0.subject == $1.subject })
+        else { return [] }
+        return zip(before, after).map { StackManifest.Rewrite(old: $0.sha, new: $1.sha) }
+    }
+
+    /// Moves a local branch to its rewritten commit, after tagging where it
+    /// was. A branch checked out in a worktree moves by `reset --keep` there,
+    /// so the files follow it and uncommitted work is kept or the move
+    /// refused. A branch that moved since it was read is left alone, with the
+    /// command that would move it. Returns whether the branch moved.
+    @discardableResult
+    func moveLocal(
+        _ branch: String, from old: String, to new: String, backup: String, worktrees: [Worktree],
+        console: any Console
+    ) async -> Bool {
+        _ = await git.capture(["tag", backup, old], config: [:])
+        if let holder = worktrees.first(where: { $0.branch == "refs/heads/\(branch)" }) {
+            let there = WorktreeGit(path: holder.path, git: git)
+            let head = await there.capture(["rev-parse", "HEAD"], config: [:]).value
+            if head == old, await rebaseInProgress(worktree: holder.path) == false,
+                await there.capture(["reset", "--quiet", "--keep", new], config: [:]).succeeded
+            {
+                return true
+            }
+            console.out("Left '\(branch)' at \(holder.path) where it was. Move it with: git reset --keep \(new)")
+            return false
+        }
+        if await git.capture(["update-ref", "refs/heads/\(branch)", new, old], config: [:]).succeeded {
+            return true
+        }
+        console.out("Left local '\(branch)' alone: it moved while this ran. Its new commit is \(new).")
+        return false
+    }
+
+    /// Every old→new pair recorded by any generation up to `manifest`.
+    func rewriteHistory(at manifest: String) async -> [String: String] {
+        let result = await git.capture(["log", "--first-parent", "--format=%B%x00", manifest], config: [:])
+        var map: [String: String] = [:]
+        for record in result.standardOutput.split(separator: "\0") {
+            let text = String(record.trimmingPrefix(while: { $0 == "\n" }))
+            guard let generation = try? StackManifest.parse(text) else { continue }
+            for rewrite in generation.rewrites where map[rewrite.old] == nil {
+                map[rewrite.old] = rewrite.new
+            }
+        }
+        return map
+    }
+
     /// The label a bubble's subject carries, as `land` writes it.
     static func label(fromSubject subject: String) -> String? {
         guard let match = subject.firstMatch(of: /^Merge ([^:\s]+):/) else { return nil }

@@ -326,3 +326,130 @@ first_parent_subjects() {
     [ "$(git rev-parse origin/fresh)" = "$(git rev-parse origin/develop)" ]
     [ "$(git rev-parse origin/ABC-6-wip~1)" = "$(git rev-parse origin/develop)" ]
 }
+
+# A second engineer's clone, taken before the restack, holding every stack
+# branch locally plus work of their own.
+clone_second() {
+    git clone -q "$TEST_DIR/remote.git" "$TEST_DIR/other" 2>/dev/null
+    cd "$TEST_DIR/other"
+    configure_clone
+    local branch
+    for branch in develop feature ABC-1-part ABC-2-part ABC-3-part; do
+        git branch -q "$branch" "origin/$branch"
+    done
+    git fetch -q origin 'refs/stack/*:refs/stack/*'
+    git config bubbleflow.stack s
+}
+
+commit_on() { # <branch> <start> <file> <content>
+    git checkout -qb "$1" "$2"
+    echo "$4" > "$3"
+    git add "$3"
+    git commit -qm "$1: $3"
+}
+
+restack_from_first() {
+    cd "$TEST_DIR/work"
+    advance_develop "$1" "$2"
+    git stack-bubble restack >/dev/null
+    cd "$TEST_DIR/other"
+}
+
+@test "sync moves stack branches and replays own work onto its rewritten fork point" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    clone_second
+    commit_on mine feature mine.txt "mine"
+    commit_on mid ABC-2-part mid.txt "mid"
+    commit_on unrelated develop unrelated.txt "unrelated"
+    unrelated_before="$(git rev-parse unrelated)"
+    git checkout -q feature
+    restack_from_first other.txt "new on develop"
+
+    run git stack-bubble sync
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"mine: replay 1 commit(s)"* ]]
+
+    for branch in feature ABC-1-part ABC-2-part ABC-3-part; do
+        [ "$(git rev-parse "$branch")" = "$(git rev-parse "origin/$branch")" ]
+    done
+    # The checked-out umbrella followed, files and all.
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/feature)" ]
+    [ "$(cat other.txt)" = "new on develop" ]
+
+    [ "$(git rev-parse mine~1)" = "$(git rev-parse origin/feature)" ]
+    [ "$(git rev-parse mid~1)" = "$(git rev-parse origin/ABC-2-part)" ]
+    [ "$(git rev-parse unrelated)" = "$unrelated_before" ]
+    [ -n "$(git tag -l 'backup/sync-s-*/mine')" ]
+
+    run git stack-bubble sync
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already on generation 1"* ]]
+}
+
+@test "sync crosses generations the clone missed" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    clone_second
+    commit_on mine feature mine.txt "mine"
+    restack_from_first one.txt "first move"
+    restack_from_first two.txt "second move"
+
+    run git stack-bubble sync mine
+    [ "$status" -eq 0 ]
+    [ "$(git rev-parse mine~1)" = "$(git rev-parse origin/feature)" ]
+    [ "$(git show mine:two.txt)" = "second move" ]
+}
+
+@test "sync replays commits added on top of a stack branch" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    clone_second
+    git checkout -q ABC-3-part
+    echo "more" > more.txt
+    git add more.txt
+    git commit -qm "More part 3"
+    git checkout -q develop
+    restack_from_first other.txt "new on develop"
+
+    run git stack-bubble sync ABC-3-part
+    [ "$status" -eq 0 ]
+    [ "$(git rev-parse ABC-3-part~1)" = "$(git rev-parse origin/ABC-3-part)" ]
+}
+
+@test "sync --dry-run reports without moving anything" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    clone_second
+    before="$(git rev-parse feature)"
+    restack_from_first other.txt "new on develop"
+
+    run git stack-bubble sync --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"feature: move to"* ]]
+    [ "$(git rev-parse feature)" = "$before" ]
+}
+
+@test "sync leaves a conflicting branch alone and syncs the rest" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    clone_second
+    commit_on clash feature other.txt "clashing"
+    clash_before="$(git rev-parse clash)"
+    git checkout -q develop
+    restack_from_first other.txt "new on develop"
+
+    run git stack-bubble sync
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"clash: conflicts on the new stack"* ]]
+    [[ "$output" == *"Not synced: clash"* ]]
+    [ "$(git rev-parse clash)" = "$clash_before" ]
+    [ "$(git rev-parse feature)" = "$(git rev-parse origin/feature)" ]
+}
+
+@test "sync refuses while the stack is being restacked" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    advance_develop README.md "edited on develop"
+    run git stack-bubble restack
+    [ "$status" -eq 1 ]
+    clone_second
+
+    run git stack-bubble sync
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"being restacked by test@example.com"* ]]
+}

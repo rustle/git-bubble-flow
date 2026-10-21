@@ -669,3 +669,27 @@ struct StackBubbleTests {
         #expect(console.combined.contains("Unknown stack-bubble command: nope"))
     }
 }
+
+@Suite("stack-bubble sync")
+struct SyncTests {
+    @Test("a commit resolves across every generation that rewrote it")
+    func resolvesChains() {
+        let map = ["a": "b", "b": "c", "x": "y"]
+        #expect(Sync.resolve("a", in: map) == "c")
+        #expect(Sync.resolve("x", in: map) == "y")
+        #expect(Sync.resolve("z", in: map) == "z")
+    }
+
+    @Test("a cycle in a corrupt map ends instead of hanging")
+    func cycle() {
+        let resolved = Sync.resolve("a", in: ["a": "b", "b": "a"])
+        #expect(resolved == "a" || resolved == "b")
+    }
+
+    @Test("branches are positional; --dry-run and --stack are options")
+    func parsing() throws {
+        let options = try #require(Sync.parse(["--dry-run", "--stack", "s", "one", "two"], console: RecordingConsole()))
+        #expect(options == Sync.Options(stack: "s", dryRun: true, branches: ["one", "two"]))
+        #expect(Sync.parse(["--nope"], console: RecordingConsole()) == nil)
+    }
+}
