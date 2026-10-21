@@ -32,7 +32,7 @@ binary="$(cd "$(dirname "$binary")" && pwd)/$(basename "$binary")"
 # One symlink per git subcommand, exactly what the Homebrew formula installs.
 shim_dir="$(mktemp -d)"
 trap 'rm -rf "$shim_dir"' EXIT
-for shim in git-verify-bubble git-land-bubble git-rebase-bubble git-bubble-absorb bubble-flow-setup; do
+for shim in git-verify-bubble git-land-bubble git-rebase-bubble git-bubble-absorb git-stack-bubble bubble-flow-setup; do
     ln -s "$binary" "$shim_dir/$shim"
 done
 

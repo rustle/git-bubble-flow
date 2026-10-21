@@ -551,3 +551,121 @@ struct TrimmingTests {
         #expect(line.trimmedWhitespace() == "value")
     }
 }
+
+@Suite("Stack manifest")
+struct StackManifestTests {
+    static let sample = StackManifest(
+        name: "engine", remote: "origin", base: "develop", umbrella: "feature/engine", generation: 3,
+        bubbles: [
+            .init(merge: String(repeating: "a", count: 40), label: "ABC-1", branch: "ABC-1-part"),
+            .init(merge: String(repeating: "b", count: 40), label: "ABC-2", branch: nil),
+        ],
+        pending: ["ABC-9-wip"],
+        lock: .init(since: 1_700_000_000, by: "Some One"),
+        rewrites: [.init(old: String(repeating: "c", count: 40), new: String(repeating: "d", count: 40))],
+        notes: ["restacked  by someone"])
+
+    @Test("survives a round trip through its commit message")
+    func roundTrip() throws {
+        #expect(try StackManifest.parse(Self.sample.encoded()) == Self.sample)
+    }
+
+    @Test("the subject names the stack and generation")
+    func subject() {
+        #expect(Self.sample.encoded().hasPrefix("stack engine generation 3\n\n"))
+    }
+
+    @Test("fields added by a newer version are ignored")
+    func unknownField() throws {
+        let text = Self.sample.encoded() + "owner someone\n"
+        #expect(try StackManifest.parse(text) == Self.sample)
+    }
+
+    @Test("a newer format is refused rather than misread")
+    func newerFormat() {
+        let text = Self.sample.encoded().replacingOccurrences(of: "format 1", with: "format 2")
+        #expect(throws: StackManifest.ParseError.self) { try StackManifest.parse(text) }
+    }
+
+    @Test("a commit that is not a manifest is refused")
+    func notAManifest() {
+        #expect(throws: StackManifest.ParseError.self) { try StackManifest.parse("Merge ABC-1: thing\n") }
+    }
+
+    @Test("a missing required field is refused")
+    func missingField() {
+        let text = Self.sample.encoded().replacingOccurrences(of: "umbrella feature/engine\n", with: "")
+        #expect(throws: StackManifest.ParseError.self) { try StackManifest.parse(text) }
+    }
+}
+
+@Suite("Restack state")
+struct RestackStateTests {
+    @Test("survives a round trip, including a worktree path with spaces")
+    func roundTrip() throws {
+        var state = RestackState(
+            name: "engine", lockedManifest: "1111", worktree: "/repo with space/.git/stack-bubble/engine",
+            oldBase: "2222", newBase: "3333", stage: .gate(1))
+        state.bubbles = [
+            .init(
+                oldMerge: "a", oldFirstParent: "b", oldSecondParent: "c", content: "c", label: "ABC-1",
+                branch: "ABC-1-part"),
+            .init(oldMerge: "d", oldFirstParent: "a", oldSecondParent: "e", content: "f", label: "ABC-2", branch: nil),
+        ]
+        state.pending = [.init(branch: "wip", tip: "g", forkIndex: 1), .init(branch: "early", tip: "h", forkIndex: nil)]
+        state.tips = [.init(branch: "ABC-1-part", remote: "c", local: nil)]
+        state.built = [.init(secondParent: "c2", merge: "a2")]
+        state.rebuiltPending = []
+        #expect(try RestackState.parse(state.encoded()) == state)
+    }
+
+    @Test("every stage round-trips", arguments: [
+        RestackState.Stage.rebase(0), .gate(2), .pending(1), .publish,
+    ])
+    func stages(stage: RestackState.Stage) throws {
+        let state = RestackState(
+            name: "s", lockedManifest: "1", worktree: "/w", oldBase: "2", newBase: "3", stage: stage)
+        #expect(try RestackState.parse(state.encoded()).stage == stage)
+    }
+}
+
+@Suite("stack-bubble")
+struct StackBubbleTests {
+    @Test("labels come from land's subject format")
+    func label() {
+        #expect(StackGit.label(fromSubject: "Merge ABC-12: part two") == "ABC-12")
+        #expect(StackGit.label(fromSubject: "Merge feature/x: thing") == "feature/x")
+        #expect(StackGit.label(fromSubject: "Merge branch 'x' into y") == nil)
+    }
+
+    @Test("stack names must be one ref component")
+    func names() {
+        let console = RecordingConsole()
+        #expect(StackBubble.validName("engine", console: console))
+        #expect(!StackBubble.validName("a/b", console: console))
+        #expect(!StackBubble.validName("--upload-pack=x", console: console))
+    }
+
+    @Test("restack's modes are mutually exclusive")
+    func exclusiveModes() {
+        let console = RecordingConsole()
+        #expect(Restack.parse(["--continue", "--abort"], console: console) == nil)
+        #expect(console.combined.contains("cannot be combined"))
+    }
+
+    @Test("--from only applies when starting")
+    func fromOnStart() throws {
+        #expect(Restack.parse(["--continue", "--from", "ABC-1"], console: RecordingConsole()) == nil)
+        let options = try #require(Restack.parse(["--from", "ABC-1", "--keep-base"], console: RecordingConsole()))
+        #expect(options.from == "ABC-1")
+        #expect(options.keepBase)
+        #expect(options.mode == .start)
+    }
+
+    @Test("an unknown subcommand is rejected with usage")
+    func unknownSubcommand() async {
+        let console = RecordingConsole()
+        #expect(await StackBubble.run(arguments: ["nope"], git: StubGit(), console: console) == 1)
+        #expect(console.combined.contains("Unknown stack-bubble command: nope"))
+    }
+}

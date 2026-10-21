@@ -3,7 +3,7 @@
 # symlinks. These guard the contract the Homebrew formula relies on.
 
 @test "every shim resolves to the same binary" {
-    for shim in git-verify-bubble git-land-bubble git-rebase-bubble git-bubble-absorb bubble-flow-setup; do
+    for shim in git-verify-bubble git-land-bubble git-rebase-bubble git-bubble-absorb git-stack-bubble bubble-flow-setup; do
         run command -v "$shim"
         [ "$status" -eq 0 ]
         [ "$(readlink "$BUBBLE_FLOW_SHIMS/$shim")" = "$BUBBLE_FLOW_BINARY" ]
@@ -19,7 +19,7 @@
 @test "--help lists every command" {
     run "$BUBBLE_FLOW_BINARY" --help
     [ "$status" -eq 0 ]
-    for command in verify land rebase absorb setup; do
+    for command in verify land rebase absorb stack setup; do
         [[ "$output" == *"$command"* ]]
     done
 }

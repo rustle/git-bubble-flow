@@ -6,7 +6,7 @@
 
 COMPOSE ?= docker compose
 PREFIX  ?= /usr/local
-SHIMS   := git-verify-bubble git-land-bubble git-rebase-bubble git-bubble-absorb bubble-flow-setup
+SHIMS   := git-verify-bubble git-land-bubble git-rebase-bubble git-bubble-absorb git-stack-bubble bubble-flow-setup
 RUN     := $(COMPOSE) run --rm dev
 DIST    ?= dist
 

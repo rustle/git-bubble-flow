@@ -37,6 +37,7 @@ class GitBubbleFlow < Formula
     git-land-bubble
     git-rebase-bubble
     git-bubble-absorb
+    git-stack-bubble
     bubble-flow-setup
   ].freeze
 

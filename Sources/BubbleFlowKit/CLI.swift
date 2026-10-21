@@ -23,6 +23,7 @@ public enum CLI {
         case land
         case rebase
         case absorb
+        case stack
         case setup
 
         /// The name a symlink must have for git to find it as a subcommand.
@@ -32,6 +33,7 @@ public enum CLI {
             case .land: "git-land-bubble"
             case .rebase: "git-rebase-bubble"
             case .absorb: "git-bubble-absorb"
+            case .stack: "git-stack-bubble"
             case .setup: "bubble-flow-setup"
             }
         }
@@ -109,6 +111,8 @@ public enum CLI {
             return await RebaseBubble.run(arguments: rest, git: git, console: console)
         case .absorb:
             return await BubbleAbsorb.run(arguments: rest, git: git, console: console)
+        case .stack:
+            return await StackBubble.run(arguments: rest, git: git, console: console)
         case .setup:
             return await Setup.run(arguments: rest, git: git, console: console)
         }
@@ -152,15 +156,32 @@ public enum CLI {
                   Run git-absorb down to the merge-base of HEAD and the
                   configured base.
 
+              stack init <name> --umbrella <branch> [--base <branch>]
+                    [--remote <remote>] [--pending <branch>]...
+                  Publish refs/stack/<name>, the shared record of an umbrella
+                  branch whose first-parent line is its base followed only by
+                  bubbles, each landed from a sub-branch.
+
+              stack show [--stack <name>]
+                  Fetch and print the stack's manifest.
+
+              stack restack [--stack <name>] [--from <bubble>] [--keep-base]
+              stack restack --continue | --abort | --break-lock
+                  Take the stack's lock, rebuild the umbrella one bubble at a
+                  time onto its base in a worktree of its own, then publish
+                  every moved branch and the manifest in one atomic push with
+                  explicit leases. Stops on a conflict for --continue. --from
+                  takes commits added to a sub-branch since it landed.
+
               setup [--base <branch>]
                   Write the bubbleflow.* config keys and the 'git land' alias
                   into the current repository. The base defaults to the branch
-                  HEAD is on; no branch name is built in. The other three
+                  HEAD is on; no branch name is built in. The other
                   commands need no alias: git finds their symlinks on PATH.
 
             Each command is also reachable through a symlink named for its git
             subcommand (git-verify-bubble, git-land-bubble, git-rebase-bubble,
-            git-bubble-absorb, bubble-flow-setup).
+            git-bubble-absorb, git-stack-bubble, bubble-flow-setup).
             """)
     }
 }

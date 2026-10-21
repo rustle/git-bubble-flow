@@ -46,7 +46,7 @@ Linux: download the static binary for your architecture from the releases page, 
 chmod +x git-bubble-flow-linux-$(uname -m)
 sudo install git-bubble-flow-linux-$(uname -m) /usr/local/bin/git-bubble-flow
 cd /usr/local/bin && for s in git-verify-bubble git-land-bubble \
-    git-rebase-bubble git-bubble-absorb bubble-flow-setup; do
+    git-rebase-bubble git-bubble-absorb git-stack-bubble bubble-flow-setup; do
   sudo ln -sf git-bubble-flow "$s"
 done
 ```
@@ -129,9 +129,29 @@ git rebase-bubble --bubble feature/neato-thingy --onto origin/develop
 
 This tags the branch first, then rebases with `--rebase-merges --update-refs` and `rerere`, then verifies the result. On a verification failure it deliberately does **not** reset — the rebase may have taken real conflict resolution work — and instead prints the reset command for you to run.
 
+### Stacks
+
+A long-lived umbrella branch that several engineers land sub-features into is a *stack*: the base, then a chain of bubbles, each landed from a sub-branch that forks from the previous bubble's merge. `rebase-bubble` can move one, but only as a single long rebase that moves local refs. `stack-bubble` moves it for a team:
+
+```sh
+# Once: publish the stack's manifest, refs/stack/interesting-feature, to
+# origin. It records the base, the umbrella, and which sub-branch each bubble
+# was landed from.
+git stack-bubble init interesting-feature --umbrella feature/interesting-feature --base develop
+
+# Whenever develop has moved on:
+git stack-bubble restack
+# ... on a conflict: resolve it in the worktree it names, `git add`, then
+git stack-bubble restack --continue
+```
+
+`restack` takes a lock in the manifest, then rebuilds the umbrella one bubble at a time in a worktree of its own: each sub-branch's landed commits are replayed onto the new previous merge with `rerere`, the repository's `stack.exec` gate runs, and a new empty merge is made with the old merge's message. A bubble with nothing moved below it is kept as it is. Nothing moves until every bubble is rebuilt. Then one `git push --atomic`, with an explicit lease per ref, moves the umbrella, every sub-branch and the manifest together, and the manifest records each old→new commit for the engineers who pull next. Local branches that moved are tagged under `backup/restack-<stack>-<timestamp>/` first, and a branch checked out in a worktree follows by `reset --keep`.
+
+A sub-branch with commits that never landed is refused, because replaying it would silently change its bubble. `--from <bubble>` takes such commits (or a sub-branch rewritten on purpose) for that bubble onward, and `--keep-base` does so without moving onto the new base. Bubbles landed on the umbrella since the last restack join the stack automatically. `--abort` drops the work and releases the lock. `--break-lock` releases a lock whose restack died; that restack can then no longer publish.
+
 ## Commands
 
-One multi-call binary, `git-bubble-flow`, with five subcommands. Each is also reachable through a symlink named for its git subcommand, which is how `git verify-bubble` resolves: git looks for a `git-verify-bubble` executable on `PATH`.
+One multi-call binary, `git-bubble-flow`, with six subcommands. Each is also reachable through a symlink named for its git subcommand, which is how `git verify-bubble` resolves: git looks for a `git-verify-bubble` executable on `PATH`.
 
 Nothing written into a repository names a path. The one alias `setup` writes is `land = land-bubble`, which sends git looking for `git-land-bubble` on `PATH` exactly as it would for any other subcommand. That is deliberate: an absolute path would name the versioned directory a `brew upgrade` deletes, and it would also travel to machines it is not true on when a config is synced or copied.
 
@@ -141,6 +161,9 @@ Nothing written into a repository names a path. The one alias `setup` writes is 
 | `land [--target <branch>] [-m <summary>] [--strict]` | `git-land-bubble` / `git land` | Clean-tree and ancestry checks, tags the target's pre-merge tip, `--no-ff` merge, verifies exactly the new bubble, resets the target on failure. Merges in whichever worktree already holds the target, leaving you on your own branch. Never pushes, never rebases for you. The subject is `Merge <TICKET>: …` when the branch name carries a ticket and `Merge <branch>: …` when it does not. `--strict` requires the ticket. |
 | `rebase [--bubble <branch>] [--onto <base>]` | `git-rebase-bubble` / `git rebase-bubble` | `rebase --rebase-merges --update-refs` with rerere on the current branch (or `--bubble`), tagging first and verifying after. On verification failure it does **not** reset — it prints the reset command. |
 | `absorb [--base <ref>] [<git-absorb args>…]` | `git-bubble-absorb` / `git bubble-absorb` | Runs `git-absorb` down to the merge-base of `HEAD` and `bubbleflow.base`. Inside a nested bubble that is the enclosing bubble, so it never rewrites below it. |
+| `stack init <name> --umbrella <branch> [--base <branch>] [--remote <remote>] [--pending <branch>]…` | `git-stack-bubble` / `git stack-bubble init` | Publishes `refs/stack/<name>`, recording the umbrella's bubbles and their sub-branches. `--pending` names unlanded branches built on the umbrella, which restack rebases without landing. Sets `bubbleflow.stack` if unset. |
+| `stack show [--stack <name>]` | `git stack-bubble show` | Fetches and prints the manifest, including who holds the lock. |
+| `stack restack [--stack <name>] [--from <bubble>] [--keep-base]`, `--continue`, `--abort`, `--break-lock` | `git stack-bubble restack` | Rebuilds the umbrella bubble by bubble onto its base and publishes it in one atomic, leased push. The only command that pushes. |
 | `setup [--base <branch>]` | `bubble-flow-setup` | Writes the `bubbleflow.*` keys and the `git land` alias into the current repository. The base defaults to the branch `HEAD` is on. |
 
 Also: `git-bubble-flow --help`, `git-bubble-flow --version`.
@@ -154,6 +177,9 @@ All keys are read from the repository's git config.
 | `bubbleflow.targets` | `develop` | `land`'s default target, a space-separated list of which the first word wins |
 | `bubbleflow.base` | `develop` | `verify`'s default base, `rebase`'s default `--onto`, and `absorb`'s base |
 | `bubbleflow.ticketPattern` | `[A-Z]+-[0-9]+` | ticket extraction in `land`, and the `--strict` subject check in `verify` |
+| `bubbleflow.stack` | — (`stack init` sets it) | the stack `stack-bubble` acts on without `--stack` |
+| `stack.preflight` | — | a shell command `restack` runs before taking the lock, with `BUBBLEFLOW_OLD_BASE` and `BUBBLEFLOW_NEW_BASE` set; failing it leaves the stack untouched |
+| `stack.exec` | — | a shell command `restack` runs in its worktree on every rebuilt bubble, with `BUBBLEFLOW_BUBBLE` set; failing it stops the restack for `--continue` |
 
 There is no built-in branch name. A repository that never ran `setup` has no base or target, and `verify`, `rebase`, `absorb` and `land` refuse to run until one is configured or passed on the command line. The ticket pattern does fall back, to `[A-Z]+-[0-9]+`, and that fallback is shared by `land` and `verify --strict` on purpose, so the two can never disagree about what counts as a ticket. Whether a ticket is *required* is opt-in on both sides: `land --strict` refuses a branch without one, and `verify --strict` refuses a subject without one. Use both or neither.
 
@@ -224,7 +250,9 @@ What *is* gone, and is the likely reason to reach back:
 
 **Building from a Homebrew formula.** The formula builds from source, and Homebrew builds must not reach the network for dependencies. So rather than letting SwiftPM resolve them, the formula declares swift-subprocess and swift-system as `resource` stanzas and rewrites the package manifest to path-based dependencies before building — verified to build with no network at all.
 
-**Safety properties, inherited by every command.** Never push. Always tag before anything that rewrites or advances a ref, so recovery is a `git reset --hard` to a named tag. Never rebase on the user's behalf — `land` refuses an un-rebased branch rather than silently fixing it, because the rebase is the step that makes the bubble empty and it is the user's judgment call.
+**The stack manifest is a commit message.** `refs/stack/<name>` points at a commit over the empty tree whose message holds the manifest as plain `key value` lines. `git commit-tree -m` writes it and `git log` reads it, so no file or stdin is ever fed to git and nothing needs a JSON parser, which would mean Foundation. Each update is a child of the last, so the ref's history is the stack's history. A stopped restack keeps its state the same way, on the local-only `refs/stack-restack/<name>`.
+
+**Safety properties, inherited by every command.** Never push, except `stack restack`, which pushes only in its publish step and only with an explicit lease on every ref. Always tag before anything that rewrites or advances a ref, so recovery is a `git reset --hard` to a named tag. Never rebase on the user's behalf — `land` refuses an un-rebased branch rather than silently fixing it, because the rebase is the step that makes the bubble empty and it is the user's judgment call.
 
 ## License
 
