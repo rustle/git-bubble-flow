@@ -147,9 +147,29 @@ enum Route {
         return (start, count)
     }
 
-    /// A patch holding only `hunks` of `file`.
+    /// A patch holding only `hunks` of `file`, in file order.
+    ///
+    /// Each hunk's new-side start is recomputed from the hunks kept before it:
+    /// `apply --unidiff-zero` has no context to search by and places a hunk at
+    /// that start, which in the full diff counts lines the dropped hunks added.
     static func patch(_ file: FileDiff, hunks: [Hunk]) -> [String] {
-        file.header + hunks.flatMap(\.lines)
+        var offset = 0
+        var lines = file.header
+        for hunk in hunks.sorted(by: { $0.oldStart < $1.oldStart }) {
+            let added = hunk.lines.dropFirst().filter { $0.hasPrefix("+") }.count
+            var newStart = hunk.oldStart + offset
+            if hunk.oldCount == 0 { newStart += 1 }
+            if added == 0 { newStart -= 1 }
+            offset += added - hunk.oldCount
+            lines.append(renumbered(hunk.lines[0], newStart: newStart))
+            lines += hunk.lines.dropFirst()
+        }
+        return lines
+    }
+
+    /// `header` with the start of its `+start[,count]` range replaced.
+    static func renumbered(_ header: String, newStart: Int) -> String {
+        header.replacing(/^(@@ -[0-9,]+ \+)[0-9]+/) { "\($0.1)\(newStart)" }
     }
 
     // MARK: - run

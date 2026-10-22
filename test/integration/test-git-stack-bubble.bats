@@ -542,6 +542,36 @@ restack_from_first() {
     [ "$status" -eq 0 ]
 }
 
+@test "route places a bubble's hunks by its own lines when another bubble's hunks shift the file" {
+    git checkout -qb ABC-4-part feature
+    printf '%s\n' a b c d e f g h >> part1.txt
+    git commit -qam "Part 4"
+    git land --target feature -m "part 4" >/dev/null
+    git checkout -qb ABC-5-part feature
+    printf '%s\n' i j k l m n o p >> part1.txt
+    git commit -qam "Part 5"
+    git land --target feature -m "part 5" >/dev/null
+    git checkout -q develop
+    git push -q origin feature ABC-4-part ABC-5-part
+    git stack-bubble init s --umbrella feature >/dev/null
+    git checkout -q feature
+    # "b" is ABC-4's and grows by two lines; X goes after "l", which is ABC-5's.
+    expected="$(printf '%s\n' "part 1" a b1 b2 b3 c d e f g h i j k l X m n o p)"
+    echo "$expected" > part1.txt
+    git add part1.txt
+
+    run git stack-bubble route
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"part1.txt @@ -3 +3,3 @@ b → ABC-4"* ]]
+    [[ "$output" == *"part1.txt @@ -13,0 +16 @@ l → ABC-5"* ]]
+
+    git fetch -q origin
+    [ "$(git show origin/ABC-5-part:part1.txt | sed -n 16p)" = "X" ]
+    [ "$(git show origin/feature:part1.txt)" = "$expected" ]
+    run git verify-bubble --base origin/develop origin/feature
+    [ "$status" -eq 0 ]
+}
+
 @test "route refuses a new file until --to names its bubble" {
     git stack-bubble init s --umbrella feature >/dev/null
     git checkout -q feature

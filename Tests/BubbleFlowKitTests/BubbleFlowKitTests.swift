@@ -741,6 +741,37 @@ struct RouteTests {
         #expect(lines.contains("+added"))
     }
 
+    @Test("a patch of chosen hunks renumbers their new side without the dropped hunks")
+    func renumbersPatch() {
+        let file = Route.parseDiff(
+            """
+            diff --git a/f b/f
+            --- a/f
+            +++ b/f
+            @@ -10,0 +11,3 @@
+            +a1
+            +a2
+            +a3
+            @@ -20 +23,2 @@ ctx
+            -old
+            +new1
+            +new2
+            @@ -50,0 +55 @@
+            +b1
+            @@ -60,2 +64,0 @@
+            -gone1
+            -gone2
+
+            """)[0]
+        func headers(_ picked: [Int]) -> [String] {
+            Route.patch(file, hunks: picked.map { file.hunks[$0] }).filter { $0.hasPrefix("@@") }
+        }
+        #expect(headers([0, 1, 2, 3]) == file.hunks.map { $0.lines[0] })
+        #expect(headers([2]) == ["@@ -50,0 +51 @@"])
+        #expect(headers([3]) == ["@@ -60,2 +59,0 @@"])
+        #expect(headers([3, 1]) == ["@@ -20 +20,2 @@ ctx", "@@ -60,2 +60,0 @@"])
+    }
+
     @Test("changed lines are blamed themselves, additions by the lines either side")
     func blameLines() {
         #expect(Route.blameLines(for: .init(oldStart: 4, oldCount: 2, lines: [])) == [4, 5])
