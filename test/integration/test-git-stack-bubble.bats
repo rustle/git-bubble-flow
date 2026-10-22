@@ -542,6 +542,31 @@ restack_from_first() {
     [ "$status" -eq 0 ]
 }
 
+@test "route moves sub-branches back when a later one cannot move, so a rerun succeeds" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    abc1_tip="$(git rev-parse ABC-1-part)"
+    git worktree add -q "$TEST_DIR/abc3" ABC-3-part
+    echo "uncommitted" >> "$TEST_DIR/abc3/part3.txt"
+    git checkout -q feature
+    echo "part 1 fixed" > part1.txt
+    echo "part 3 continued" >> part3.txt
+    git add part1.txt part3.txt
+
+    run git stack-bubble route
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Could not move 'ABC-3-part'"* ]]
+    [[ "$output" == *"Moved 'ABC-1-part' back"* ]]
+    [ "$(git rev-parse ABC-1-part)" = "$abc1_tip" ]
+    [ "$(git diff --cached --name-only | sort | tr '\n' ' ')" = "part1.txt part3.txt " ]
+
+    git -C "$TEST_DIR/abc3" checkout -q part3.txt
+    run git stack-bubble route
+    [ "$status" -eq 0 ]
+    git fetch -q origin
+    [ "$(git show origin/ABC-1-part:part1.txt)" = "part 1 fixed" ]
+    [ "$(git show origin/ABC-3-part:part3.txt | tail -1)" = "part 3 continued" ]
+}
+
 @test "route places a bubble's hunks by its own lines when another bubble's hunks shift the file" {
     git checkout -qb ABC-4-part feature
     printf '%s\n' a b c d e f g h >> part1.txt

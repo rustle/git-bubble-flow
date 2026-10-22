@@ -347,14 +347,22 @@ enum Route {
         // Nothing outside the scratch worktrees has changed until here.
         let backupPrefix = "backup/route-\(name)-\(backupTimestamp(now))"
         let worktrees = await Worktree.list(git: git)
-        for entry in newTips {
+        for (position, entry) in newTips.enumerated() {
             guard let branch = bubbles[entry.index].branch else { continue }
             if let old = entry.old {
                 guard
                     await stack.moveLocal(
                         branch, from: old, to: entry.new, backup: "\(backupPrefix)/\(branch)", worktrees: worktrees,
                         console: console)
-                else { return 1 }
+                else {
+                    // A rerun folds into every target again, so the ones
+                    // already moved go back to where it will expect them.
+                    await undoMoves(
+                        Array(newTips[..<position]), bubbles: bubbles, backupPrefix: backupPrefix,
+                        worktrees: worktrees, git: git, console: console)
+                    error("Could not move '\(branch)'. The fix is still staged; rerun route once it can move.")
+                    return 1
+                }
             } else {
                 _ = await git.capture(["branch", "--end-of-options", branch, entry.new], config: [:])
             }
@@ -384,6 +392,29 @@ enum Route {
         restack.keepBase = true
         restack.rewrittenOver = foldedOver
         return await Restack.Context(name: name, git: git, console: console, hooks: hooks, now: now).start(restack)
+    }
+
+    /// Puts sub-branches route already moved back where they were. Each
+    /// routed tip stays tagged under `backupPrefix` with a `-routed` suffix.
+    static func undoMoves(
+        _ moved: [(index: Int, old: String?, new: String)], bubbles: [Bubble], backupPrefix: String,
+        worktrees: [Worktree], git: any GitRunning, console: any Console
+    ) async {
+        let stack = StackGit(git: git)
+        for entry in moved {
+            guard let branch = bubbles[entry.index].branch else { continue }
+            let backup = "\(backupPrefix)/\(branch)-routed"
+            if let old = entry.old {
+                if await stack.moveLocal(
+                    branch, from: entry.new, to: old, backup: backup, worktrees: worktrees, console: console)
+                {
+                    console.out("Moved '\(branch)' back to \(String(old.prefix(12))).")
+                }
+            } else {
+                _ = await git.capture(["tag", backup, entry.new], config: [:])
+                _ = await git.capture(["update-ref", "-d", "refs/heads/\(branch)", entry.new], config: [:])
+            }
+        }
     }
 
     /// The stack's bubbles as the umbrella has them now, with the commits
