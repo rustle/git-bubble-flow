@@ -230,6 +230,50 @@ first_parent_subjects() {
     [ "$(git rev-parse origin/ABC-2-part)" = "$(git rev-parse origin/feature~1^2)" ]
 }
 
+@test "restack --from refuses a local sub-branch missing commits on its remote" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    git checkout -q ABC-2-part
+    echo "pushed by a teammate" > fix.txt
+    git add fix.txt
+    git commit -qm "Teammate fix"
+    git push -q origin ABC-2-part
+    git reset -q --hard HEAD~1
+    git checkout -q develop
+    remote_tip="$(git rev-parse origin/ABC-2-part)"
+
+    run git stack-bubble restack --from ABC-2 --keep-base
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'origin/ABC-2-part' has commits that local 'ABC-2-part' does not"* ]]
+    git fetch -q origin
+    [ "$(git rev-parse origin/ABC-2-part)" = "$remote_tip" ]
+    [ -z "$(git show -s --format=%B refs/stack/s | grep -i lock || true)" ]
+}
+
+@test "route refuses a sub-branch behind its remote until it is synced" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    git checkout -q ABC-2-part
+    echo "pushed by a teammate" > fix.txt
+    git add fix.txt
+    git commit -qm "Teammate fix"
+    git push -q origin ABC-2-part
+    git reset -q --hard HEAD~1
+    git checkout -q feature
+    echo "part 2 fixed" > part2.txt
+    git add part2.txt
+
+    run git stack-bubble route
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Sub-branch 'ABC-2-part' is behind bubble ABC-2 or 'origin/ABC-2-part'"* ]]
+    [ "$(git rev-parse origin/ABC-2-part)" != "$(git rev-parse ABC-2-part)" ]
+
+    git stack-bubble sync ABC-2-part >/dev/null
+    run git stack-bubble route
+    [ "$status" -eq 0 ]
+    git fetch -q origin
+    [ "$(git show origin/feature:fix.txt)" = "pushed by a teammate" ]
+    [ "$(git show origin/feature:part2.txt)" = "part 2 fixed" ]
+}
+
 @test "a failing stack.preflight leaves the stack unlocked" {
     git stack-bubble init s --umbrella feature >/dev/null
     manifest="$(git rev-parse refs/stack/s)"

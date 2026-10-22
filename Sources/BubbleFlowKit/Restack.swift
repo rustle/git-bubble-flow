@@ -33,6 +33,9 @@ enum Restack {
         var stack: String?
         var from: String?
         var keepBase = false
+        /// Sub-branches whose local tip rewrites the remote tip given here on
+        /// purpose, as `route` does when it absorbs a fix into older commits.
+        var rewrittenOver: [String: String] = [:]
     }
 
     static func parse(_ arguments: [String], console: any Console) -> Options? {
@@ -226,6 +229,17 @@ enum Restack {
                     guard let entry = await tip(of: branch, remote: remote, allowLocalChanges: takesLocal)
                     else { return 1 }
                     state.tips.append(entry)
+                    // The lease is on the remote as fetched, so it cannot catch
+                    // a local tip that is missing the remote's commits.
+                    if takesLocal, let local = entry.local, let remoteTip = entry.remote, local != remoteTip,
+                        options.rewrittenOver[branch] != remoteTip,
+                        !(await stack.isAncestor(remoteTip, of: parents[1])),
+                        !(await stack.isAncestor(remoteTip, of: local))
+                    {
+                        error("'\(remote)/\(branch)' has commits that local '\(branch)' does not.")
+                        console.err("Taking the local branch would drop them. Bring them into '\(branch)' first.")
+                        return 1
+                    }
                     let current = takesLocal ? (entry.local ?? entry.remote) : (entry.remote ?? entry.local)
                     if let moved = current, moved != parents[1] {
                         if let fromIndex, index >= fromIndex, moved != parents[0],

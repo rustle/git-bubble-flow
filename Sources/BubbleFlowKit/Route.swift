@@ -286,6 +286,7 @@ enum Route {
         }
 
         var newTips: [(index: Int, old: String?, new: String)] = []
+        var foldedOver: [String: String] = [:]
         for index in targets {
             let bubble = bubbles[index]
             guard let branch = bubble.branch else { continue }
@@ -295,6 +296,16 @@ enum Route {
                 await stack.isAncestor(bubble.firstParent, of: tip)
             else {
                 error("Sub-branch '\(branch)' of bubble \(bubble.label) is missing or no longer sits on its bubble.")
+                await cleanUp()
+                return 1
+            }
+            // Restack takes this tip as the bubble's content, so it must hold
+            // everything the bubble and the remote sub-branch already have.
+            var stale = !(await stack.isAncestor(bubble.secondParent, of: tip))
+            if !stale, let remoteTip { stale = !(await stack.isAncestor(remoteTip, of: tip)) }
+            if stale {
+                error("Sub-branch '\(branch)' is behind bubble \(bubble.label) or '\(remote)/\(branch)'.")
+                console.err("Run 'git stack-bubble sync \(branch)' first.")
                 await cleanUp()
                 return 1
             }
@@ -309,6 +320,7 @@ enum Route {
                 return 1
             }
             newTips.append((index, local, fixed))
+            if let remoteTip { foldedOver[branch] = remoteTip }
         }
         await cleanUp()
 
@@ -350,6 +362,7 @@ enum Route {
         var restack = Restack.Options()
         restack.from = earliest
         restack.keepBase = true
+        restack.rewrittenOver = foldedOver
         return await Restack.Context(name: name, git: git, console: console, hooks: hooks, now: now).start(restack)
     }
 
