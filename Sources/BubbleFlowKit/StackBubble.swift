@@ -364,6 +364,10 @@ public enum StackBubble {
             error("'\(name)' is being restacked by \(lock.by). Start the branch once it is published.")
             return 1
         }
+        if let bubble = manifest.bubbles.first(where: { $0.branch == branch }) {
+            error("'\(branch)' is the sub-branch of bubble \(bubble.label).")
+            return 1
+        }
         let existingLocal = await stack.sha("refs/heads/\(branch)")
         let existingRemote = await stack.sha("refs/remotes/\(remote)/\(branch)")
         if existingLocal != nil || existingRemote != nil {
@@ -376,7 +380,9 @@ public enum StackBubble {
         }
 
         var next = manifest
-        next.pending.append(branch)
+        // Listed already when an earlier pending branch of that name was
+        // deleted; restarting it must not add a second entry.
+        if !next.pending.contains(branch) { next.pending.append(branch) }
         next.rewrites = []
         next.notes = ["pending \(branch) added by \(await stack.identity())"]
         guard let commit = await stack.recordCommit(message: next.encoded(), parent: sha) else {

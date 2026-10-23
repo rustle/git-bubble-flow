@@ -270,7 +270,8 @@ enum Restack {
             if state.bubbles.isEmpty { state.stage = .pending(0) }
 
             let firstParents = [oldBase] + bubbles.map(\.merge)
-            for branch in manifest.pending {
+            var seenPending: Set<String> = []
+            for branch in manifest.pending where seenPending.insert(branch).inserted {
                 guard let entry = await tip(of: branch, remote: remote) else { return 1 }
                 // Deleted here and on the remote: there is nothing left to rebase.
                 guard let pendingTip = entry.remote ?? entry.local else {
