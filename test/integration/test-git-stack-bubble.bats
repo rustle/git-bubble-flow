@@ -652,6 +652,20 @@ restack_from_first() {
     [[ "$output" == *"already exists"* ]]
 }
 
+@test "restack drops a pending branch deleted everywhere" {
+    git stack-bubble init s --umbrella feature >/dev/null
+    git stack-bubble new ABC-7-next >/dev/null
+    git checkout -q develop
+    git branch -qD ABC-7-next
+    git push -q origin --delete ABC-7-next
+
+    run git stack-bubble restack
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Pending branch 'ABC-7-next' no longer exists; it is no longer pending."* ]]
+    run git stack-bubble show
+    [[ "$output" != *"pending"* ]]
+}
+
 @test "a pending branch that lands becomes a bubble at the next restack" {
     git stack-bubble init s --umbrella feature >/dev/null
     git stack-bubble new ABC-7-next >/dev/null

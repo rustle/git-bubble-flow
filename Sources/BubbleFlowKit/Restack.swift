@@ -272,9 +272,10 @@ enum Restack {
             let firstParents = [oldBase] + bubbles.map(\.merge)
             for branch in manifest.pending {
                 guard let entry = await tip(of: branch, remote: remote) else { return 1 }
+                // Deleted here and on the remote: there is nothing left to rebase.
                 guard let pendingTip = entry.remote ?? entry.local else {
-                    error("Pending branch '\(branch)' no longer exists. Remove it from the stack first.")
-                    return 1
+                    console.out("Pending branch '\(branch)' no longer exists; it is no longer pending.")
+                    continue
                 }
                 // Landed since: it is a bubble now, adopted above.
                 if await stack.isAncestor(pendingTip, of: umbrellaTip) {
